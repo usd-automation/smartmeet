@@ -6826,7 +6826,7 @@ function notifySessionCreated(session) {
     // Get recipients
     const recipients = isTeamMeeting ? (session.attendees || []) : [session.attendee];
     
-    // Build notes section from fieldData
+    // Build notes section from fieldData (Outlook-compatible table rows)
     let notesHtml = '';
     if (session.fieldData && session.category) {
         const categories = (session.category || '').split(', ').filter(c => c);
@@ -6837,15 +6837,15 @@ function notifySessionCreated(session) {
                 fields.forEach(field => {
                     const value = session.fieldData[`${cat}__${field.name}`] || session.fieldData[field.name] || '';
                     if (value) {
-                        catNotes += `<tr><td style="padding:5px 0;color:#5a6a7a;font-size:12px;vertical-align:top;width:140px;">${field.label}</td><td style="padding:5px 0;color:#1a1a2e;font-size:13px;white-space:pre-wrap;">${value}</td></tr>`;
+                        catNotes += `<tr><td style="padding:6px 12px;color:#5C6B7A;font-size:13px;font-family:'Segoe UI',Arial,sans-serif;vertical-align:top;width:140px;border-bottom:1px solid #EDF0F5;">${field.label}</td><td style="padding:6px 12px;color:#1B2A3D;font-size:13px;font-family:'Segoe UI',Arial,sans-serif;border-bottom:1px solid #EDF0F5;">${value}</td></tr>`;
                     }
                 });
                 if (catNotes) {
                     notesHtml += `
-                        <div style="margin-bottom:16px;">
-                            <div style="font-size:12px;font-weight:700;color:#0070F2;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e0e7f5;">${cat}</div>
-                            <table style="width:100%;border-collapse:collapse;">${catNotes}</table>
-                        </div>`;
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:16px;">
+                        <tr><td style="padding:0 0 8px 0;font-size:11px;font-weight:700;color:#0070F2;text-transform:uppercase;letter-spacing:0.8px;font-family:'Segoe UI',Arial,sans-serif;border-bottom:2px solid #0070F2;">${cat}</td><td style="border-bottom:2px solid #0070F2;">&nbsp;</td></tr>
+                        <tr><td colspan="2" style="padding-top:8px;"><table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">${catNotes}</table></td></tr>
+                    </table>`;
                 }
             }
         });
@@ -6853,10 +6853,10 @@ function notifySessionCreated(session) {
     // Include comments/feedback in email notes if present
     if (session.commentsFeedback) {
         notesHtml += `
-            <div style="margin-bottom:16px;">
-                <div style="font-size:12px;font-weight:700;color:#0070F2;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e0e7f5;">Comments / Feedback</div>
-                <div style="padding:5px 0;color:#1a1a2e;font-size:13px;white-space:pre-wrap;">${session.commentsFeedback}</div>
-            </div>`;
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:16px;">
+            <tr><td style="padding:0 0 8px 0;font-size:11px;font-weight:700;color:#0070F2;text-transform:uppercase;letter-spacing:0.8px;font-family:'Segoe UI',Arial,sans-serif;border-bottom:2px solid #0070F2;">Comments / Feedback</td></tr>
+            <tr><td style="padding:10px 12px 6px;color:#1B2A3D;font-size:13px;font-family:'Segoe UI',Arial,sans-serif;">${session.commentsFeedback}</td></tr>
+        </table>`;
     }
     
     recipients.forEach(attendeeName => {
@@ -6866,43 +6866,121 @@ function notifySessionCreated(session) {
         const user = getUserByTitle(attendeeName);
         if (!user || !user.email) return;
         
+        const appUrl = getSmartMeetAppUrl();
         const subject = `SmartMeet: New ${session.sessionType} Session - ${session.category}`;
         const htmlBody = `
-            <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;">
-                <div style="background:linear-gradient(135deg,#0a1628,#1a3a6b);padding:24px 30px;border-radius:12px 12px 0 0;">
-                    <h1 style="color:#ffffff;margin:0;font-size:20px;">SmartMeet Notification</h1>
-                    <p style="color:#89D1FF;margin:4px 0 0;font-size:13px;">New coaching session assigned to you</p>
-                </div>
-                <div style="background:#ffffff;padding:28px 30px;border:1px solid #e0e7f5;border-top:none;border-radius:0 0 12px 12px;">
-                    <p style="color:#1a1a2e;font-size:15px;margin:0 0 20px;">Hi <strong>${attendeeName.split(' ')[0]}</strong>,</p>
-                    <p style="color:#3a4a5a;font-size:14px;margin:0 0 20px;line-height:1.5;">
-                        A new <strong>${session.sessionType}</strong> session has been created for you. Please review and acknowledge it at your earliest convenience.
-                    </p>
-                    <div style="background:#f0f4ff;border-radius:10px;padding:18px;margin-bottom:20px;">
-                        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                            <tr><td style="padding:6px 0;color:#5a6a7a;width:120px;">Session ID</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.sessionId}</td></tr>
-                            <tr><td style="padding:6px 0;color:#5a6a7a;">Type</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.sessionType}</td></tr>
-                            <tr><td style="padding:6px 0;color:#5a6a7a;">Category</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.category}</td></tr>
-                            <tr><td style="padding:6px 0;color:#5a6a7a;">Date</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${formatDate(session.date)}</td></tr>
-                            <tr><td style="padding:6px 0;color:#5a6a7a;">Created By</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.createdByName}</td></tr>
-                        </table>
-                    </div>
-                    ${notesHtml ? `
-                    <div style="margin-bottom:20px;">
-                        <div style="font-size:14px;font-weight:700;color:#00144A;margin-bottom:12px;">Session Notes</div>
-                        <div style="background:#f8faff;border-radius:10px;padding:18px;border:1px solid #e0e7f5;">
-                            ${notesHtml}
-                        </div>
-                    </div>` : ''}
-                    ${getSmartMeetAppUrl() ? `
-                    <div style="text-align:center;margin:24px 0 16px;">
-                        <a href="${getSmartMeetAppUrl()}" target="_blank" style="display:inline-block;background:#0070F2;color:#ffffff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:600;">Open SmartMeet</a>
-                    </div>` : ''}
-                    <p style="color:#5a6a7a;font-size:12px;margin:16px 0 0;line-height:1.4;text-align:center;">
-                        Log in to SmartMeet to view full details and acknowledge this session.
-                    </p>
-                </div>
-            </div>`;
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<!--[if mso]><xml><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
+</head><body style="margin:0;padding:0;background-color:#F2F4F8;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#F2F4F8" style="border-collapse:collapse;">
+<tr><td align="center" style="padding:24px 16px;">
+
+<!-- Container -->
+<table width="600" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;max-width:600px;width:100%;">
+
+<!-- Header bar -->
+<tr><td bgcolor="#00144A" style="padding:28px 32px 24px 32px;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+    <tr>
+        <td style="font-family:'Segoe UI',Arial,sans-serif;font-size:22px;font-weight:700;color:#FFFFFF;line-height:28px;">SmartMeet</td>
+    </tr>
+    <tr>
+        <td style="padding-top:6px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#89CFF0;line-height:18px;">New coaching session assigned to you</td>
+    </tr>
+    </table>
+</td></tr>
+
+<!-- Blue accent stripe -->
+<tr><td bgcolor="#0070F2" style="height:4px;font-size:1px;line-height:1px;">&nbsp;</td></tr>
+
+<!-- Body -->
+<tr><td bgcolor="#FFFFFF" style="padding:32px 32px 24px 32px;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+
+    <!-- Greeting -->
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:15px;color:#1B2A3D;line-height:22px;padding-bottom:20px;">
+        Hi <strong>${attendeeName.split(' ')[0]}</strong>,
+    </td></tr>
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#3A4D63;line-height:22px;padding-bottom:24px;">
+        A new <strong>${session.sessionType}</strong> session has been created for you. Please review and acknowledge it at your earliest convenience.
+    </td></tr>
+
+    <!-- Session details card -->
+    <tr><td style="padding-bottom:24px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#F5F7FB" style="border-collapse:collapse;border:1px solid #E2E8F0;">
+        <tr><td bgcolor="#E8EDF5" style="padding:10px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;font-weight:700;color:#00144A;text-transform:uppercase;letter-spacing:0.6px;">Session Details</td></tr>
+        <tr><td style="padding:4px 0;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #EDF0F5;">Session ID</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #EDF0F5;">${session.sessionId}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #EDF0F5;">Type</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #EDF0F5;">${session.sessionType}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #EDF0F5;">Category</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #EDF0F5;">${session.category}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #EDF0F5;">Date</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #EDF0F5;">${formatDate(session.date)}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;">Created By</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;">${session.createdByName}</td>
+                </tr>
+            </table>
+        </td></tr>
+        </table>
+    </td></tr>
+
+    ${notesHtml ? `
+    <!-- Session Notes -->
+    <tr><td style="padding-bottom:24px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+        <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:700;color:#00144A;padding-bottom:12px;">Session Notes</td></tr>
+        <tr><td style="padding:16px;border:1px solid #E2E8F0;" bgcolor="#FAFBFD">
+            ${notesHtml}
+        </td></tr>
+        </table>
+    </td></tr>` : ''}
+
+    ${appUrl ? `
+    <!-- CTA Button (VML for Outlook) -->
+    <tr><td align="center" style="padding:8px 0 24px;">
+        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+        <tr><td align="center" bgcolor="#0070F2" style="padding:13px 32px;">
+            <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${appUrl}" style="height:44px;v-text-anchor:middle;width:200px;" arcsize="14%" strokecolor="#0070F2" fillcolor="#0070F2"><w:anchorlock/><center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:600;">Open SmartMeet</center></v:roundrect><![endif]-->
+            <!--[if !mso]><!--><a href="${appUrl}" target="_blank" style="display:inline-block;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;font-weight:600;color:#FFFFFF;text-decoration:none;line-height:18px;">Open SmartMeet</a><!--<![endif]-->
+        </td></tr>
+        </table>
+    </td></tr>` : ''}
+
+    <!-- Footer note -->
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#8494A7;line-height:18px;text-align:center;padding-top:4px;">
+        Log in to SmartMeet to view full details and acknowledge this session.
+    </td></tr>
+
+    </table>
+</td></tr>
+
+<!-- Footer -->
+<tr><td bgcolor="#F5F7FB" style="padding:16px 32px;border-top:1px solid #E2E8F0;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:11px;color:#8494A7;line-height:16px;text-align:center;">
+        USD Manila SmartMeet &bull; Coaching Session Management
+    </td></tr>
+    </table>
+</td></tr>
+
+</table>
+<!-- /Container -->
+
+</td></tr>
+</table>
+</body></html>`;
         
         sendGraphEmail(user.email, user.title, subject, htmlBody);
     });
@@ -6917,32 +6995,99 @@ function notifySessionAcknowledged(session) {
     // Skip if creator acknowledged their own session
     if (creator.title === currentUser.title) return;
     
+    const appUrl = getSmartMeetAppUrl();
     const subject = `SmartMeet: Session ${session.sessionId} Acknowledged by ${session.attendee}`;
     const htmlBody = `
-        <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;">
-            <div style="background:linear-gradient(135deg,#0d3320,#1A7A4C);padding:24px 30px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#ffffff;margin:0;font-size:20px;">SmartMeet Notification</h1>
-                <p style="color:#A8E6CF;margin:4px 0 0;font-size:13px;">Session acknowledged</p>
-            </div>
-            <div style="background:#ffffff;padding:28px 30px;border:1px solid #e0e7f5;border-top:none;border-radius:0 0 12px 12px;">
-                <p style="color:#1a1a2e;font-size:15px;margin:0 0 20px;">Hi <strong>${creator.title.split(' ')[0]}</strong>,</p>
-                <p style="color:#3a4a5a;font-size:14px;margin:0 0 20px;line-height:1.5;">
-                    <strong>${session.attendee}</strong> has acknowledged the coaching session.
-                </p>
-                <div style="background:#f0faf5;border-radius:10px;padding:18px;margin-bottom:20px;">
-                    <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                        <tr><td style="padding:6px 0;color:#5a6a7a;width:120px;">Session ID</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.sessionId}</td></tr>
-                        <tr><td style="padding:6px 0;color:#5a6a7a;">Type</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.sessionType}</td></tr>
-                        <tr><td style="padding:6px 0;color:#5a6a7a;">Category</td><td style="padding:6px 0;color:#00144A;font-weight:600;">${session.category}</td></tr>
-                        <tr><td style="padding:6px 0;color:#5a6a7a;">Acknowledged</td><td style="padding:6px 0;color:#1A7A4C;font-weight:600;">${formatDate(session.ackDate)}</td></tr>
-                        ${session.ackComment ? `<tr><td style="padding:6px 0;color:#5a6a7a;">Comment</td><td style="padding:6px 0;color:#00144A;font-style:italic;">"${session.ackComment}"</td></tr>` : ''}
-                    </table>
-                </div>
-                <p style="color:#5a6a7a;font-size:12px;margin:16px 0 0;line-height:1.4;text-align:center;">
-                    No action required. This is a confirmation notification.
-                </p>
-            </div>
-        </div>`;
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<!--[if mso]><xml><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
+</head><body style="margin:0;padding:0;background-color:#F2F4F8;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#F2F4F8" style="border-collapse:collapse;">
+<tr><td align="center" style="padding:24px 16px;">
+
+<!-- Container -->
+<table width="600" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;max-width:600px;width:100%;">
+
+<!-- Header bar -->
+<tr><td bgcolor="#0D3B20" style="padding:28px 32px 24px 32px;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+    <tr>
+        <td style="font-family:'Segoe UI',Arial,sans-serif;font-size:22px;font-weight:700;color:#FFFFFF;line-height:28px;">SmartMeet</td>
+    </tr>
+    <tr>
+        <td style="padding-top:6px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#A8E6CF;line-height:18px;">Session acknowledged</td>
+    </tr>
+    </table>
+</td></tr>
+
+<!-- Green accent stripe -->
+<tr><td bgcolor="#1A7A4C" style="height:4px;font-size:1px;line-height:1px;">&nbsp;</td></tr>
+
+<!-- Body -->
+<tr><td bgcolor="#FFFFFF" style="padding:32px 32px 24px 32px;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+
+    <!-- Greeting -->
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:15px;color:#1B2A3D;line-height:22px;padding-bottom:20px;">
+        Hi <strong>${creator.title.split(' ')[0]}</strong>,
+    </td></tr>
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#3A4D63;line-height:22px;padding-bottom:24px;">
+        <strong>${session.attendee}</strong> has acknowledged the coaching session.
+    </td></tr>
+
+    <!-- Session details card -->
+    <tr><td style="padding-bottom:24px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#F2FAF5" style="border-collapse:collapse;border:1px solid #D5EDE0;">
+        <tr><td bgcolor="#D5EDE0" style="padding:10px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;font-weight:700;color:#0D3B20;text-transform:uppercase;letter-spacing:0.6px;">Session Details</td></tr>
+        <tr><td style="padding:4px 0;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #E5F0EB;">Session ID</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #E5F0EB;">${session.sessionId}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #E5F0EB;">Type</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #E5F0EB;">${session.sessionType}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #E5F0EB;">Category</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-weight:600;border-bottom:1px solid #E5F0EB;">${session.category}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;border-bottom:1px solid #E5F0EB;">Acknowledged</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1A7A4C;font-weight:600;border-bottom:1px solid #E5F0EB;">${formatDate(session.ackDate)}</td>
+                </tr>
+                ${session.ackComment ? `<tr>
+                    <td style="padding:8px 16px;width:130px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#5C6B7A;">Comment</td>
+                    <td style="padding:8px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#00144A;font-style:italic;">&ldquo;${session.ackComment}&rdquo;</td>
+                </tr>` : ''}
+            </table>
+        </td></tr>
+        </table>
+    </td></tr>
+
+    <!-- Footer note -->
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#8494A7;line-height:18px;text-align:center;padding-top:4px;">
+        No action required. This is a confirmation notification.
+    </td></tr>
+
+    </table>
+</td></tr>
+
+<!-- Footer -->
+<tr><td bgcolor="#F5F7FB" style="padding:16px 32px;border-top:1px solid #E2E8F0;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+    <tr><td style="font-family:'Segoe UI',Arial,sans-serif;font-size:11px;color:#8494A7;line-height:16px;text-align:center;">
+        USD Manila SmartMeet &bull; Coaching Session Management
+    </td></tr>
+    </table>
+</td></tr>
+
+</table>
+<!-- /Container -->
+
+</td></tr>
+</table>
+</body></html>`;
     
     sendGraphEmail(creator.email, creator.title, subject, htmlBody);
 }
