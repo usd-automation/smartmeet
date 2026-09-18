@@ -2351,9 +2351,10 @@ tbody tr:last-child td { border-bottom: none; }
             <div class="form-group" style="margin-top:16px;">
                 <label>Attachments</label>
                 <div class="attachment-zone" onclick="document.getElementById('fFiles').click()">
-                    Click or drag files here to attach (images, PDF, audio/MP3)
+                    <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Click or drag files here to attach</div>
+                    <div style="font-size:11px;color:var(--gray-400);">Supported: Images (PNG, JPG, GIF) | Documents (PDF, DOC, DOCX) | Spreadsheets (XLS, XLSX, CSV) | Audio (MP3, WAV, M4A, OGG) | Email (EML, MSG)</div>
                 </div>
-                <input type="file" id="fFiles" multiple accept="image/*,.pdf,.doc,.docx,audio/*,.mp3,.wav,.m4a,.ogg,.wma,.aac" style="display:none;" onchange="handleFileSelect(event)">
+                <input type="file" id="fFiles" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,audio/*,.mp3,.wav,.m4a,.ogg,.wma,.aac,.eml,.msg" style="display:none;" onchange="handleFileSelect(event)">
                 <div class="attachment-list" id="attachmentList"></div>
             </div>
         </div>
@@ -6187,6 +6188,7 @@ function saveDraft() {
         id: currentDraftId || generateDraftId(),
         sessionType, date, outlier, categories, attendees, fieldData,
         commentsFeedback: getCommentsFeedbackValue(),
+        attachments: pendingAttachments.map(a => ({name: a.name, type: a.type, data: a.data})),
         savedAt: new Date().toISOString(), 
         userId: currentUser.id,
         userName: currentUser.name
@@ -6388,6 +6390,12 @@ function restoreDraft(draft) {
                 }
             });
             renderSelectedChips();
+        }
+        
+        // Restore attachments
+        if (draft.attachments && draft.attachments.length > 0) {
+            pendingAttachments = draft.attachments.map(a => ({name: a.name, type: a.type, data: a.data}));
+            renderAttachmentList();
         }
     }, 100);
 }
@@ -7336,9 +7344,34 @@ function deleteSession(sessionId) {
 const MAX_ATTACHMENT_SIZE_MB = 25; // Max per file in MB (SharePoint supports up to 250MB)
 const MAX_TOTAL_ATTACHMENTS_MB = 100; // Max total attachments per session
 
+// Allowed file extensions for attachments
+const ALLOWED_ATTACHMENT_TYPES = [
+    // Images
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
+    // Documents
+    '.pdf', '.doc', '.docx',
+    // Spreadsheets
+    '.xls', '.xlsx', '.csv',
+    // Audio
+    '.mp3', '.wav', '.m4a', '.ogg', '.wma', '.aac',
+    // Email
+    '.eml', '.msg'
+];
+
+function isAllowedFileType(fileName) {
+    const ext = '.' + fileName.split('.').pop().toLowerCase();
+    return ALLOWED_ATTACHMENT_TYPES.includes(ext);
+}
+
 function handleFileSelect(event) {
     const files = event.target.files;
     Array.from(files).forEach(file => {
+        // Check file type first
+        if (!isAllowedFileType(file.name)) {
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            alert(`File "${file.name}" is not supported.\n\nThe file type "${ext}" is not allowed.\n\nSupported formats:\n- Images: PNG, JPG, GIF, BMP, WEBP, SVG\n- Documents: PDF, DOC, DOCX\n- Spreadsheets: XLS, XLSX, CSV\n- Audio: MP3, WAV, M4A, OGG, WMA, AAC\n- Email: EML, MSG`);
+            return;
+        }
         const fileSizeMB = file.size / (1024 * 1024);
         if (fileSizeMB > MAX_ATTACHMENT_SIZE_MB) {
             alert(`File "${file.name}" is ${fileSizeMB.toFixed(1)}MB which exceeds the ${MAX_ATTACHMENT_SIZE_MB}MB limit per file.\n\nPlease use a smaller file or compress it before attaching.`);
