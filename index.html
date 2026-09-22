@@ -2730,6 +2730,13 @@ const SP_ATTACHMENTS_FOLDER = 'SmartMeet/Attachments';
 const SP_USERS_LIST = 'SmartMeet Users';
 
 let spDataReady = false;
+let sessionsETag = null; // eTag for optimistic concurrency on sessions.json
+let _saveQueue = Promise.resolve(); // Mutex: serializes all SharePoint save operations
+function enqueueSave(fn) {
+    // Chains save operations so they never run in parallel
+    _saveQueue = _saveQueue.then(fn).catch(err => { console.error('[SaveQueue] Error:', err); return fn().catch(e2 => console.error('[SaveQueue] Retry also failed:', e2)); });
+    return _saveQueue;
+}
 let spDriveId = null;
 let spSiteId = null;
 let graphToken = null;
@@ -2834,6 +2841,8 @@ async function loadSessionsFromSharePoint() {
         throw new Error(`Load sessions failed: HTTP ${response.status}`);
     }
     
+    // Capture eTag for optimistic concurrency
+    sessionsETag = response.headers.get('ETag') || null;
     const text = await response.text();
     const parsed = JSON.parse(text);
     sessions = Array.isArray(parsed) ? parsed : (parsed.sessions || []);
@@ -2885,6 +2894,7 @@ async function saveAllSessionsToSharePoint() {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (readResp.ok) {
+                sessionsETag = readResp.headers.get('ETag') || sessionsETag;
                 const text = await readResp.text();
                 const parsed = JSON.parse(text);
                 remoteSessions = Array.isArray(parsed) ? parsed : (parsed.sessions || []);
@@ -2937,15 +2947,81 @@ async function saveAllSessionsToSharePoint() {
         
         const content = JSON.stringify(cleanSessions);
         
-        // STEP 4: Write merged sessions back to SharePoint
-        const response = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${SP_SESSIONS_FILE}:/content`, {
+        // STEP 4: Write merged sessions back to SharePoint with optimistic concurrency
+        const putHeaders = {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        };
+        // If we have an eTag, use If-Match for conflict detection
+        if (sessionsETag) {
+            putHeaders['If-Match'] = sessionsETag;
+        }
+        
+        let response = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${SP_SESSIONS_FILE}:/content`, {
             method: 'PUT',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
+            headers: putHeaders,
             body: content
         });
+        
+        // STEP 5: Handle 412 Precondition Failed (another user saved since we last read)
+        if (response.status === 412 || response.status === 409) {
+            console.warn('[Concurrency] Conflict detected (HTTP ' + response.status + ') — re-reading, re-merging, and retrying...');
+            // Re-read remote sessions
+            try {
+                const retryReadResp = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${SP_SESSIONS_FILE}:/content`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (retryReadResp.ok) {
+                    sessionsETag = retryReadResp.headers.get('ETag') || null;
+                    const retryText = await retryReadResp.text();
+                    const retryParsed = JSON.parse(retryText);
+                    const freshRemote = Array.isArray(retryParsed) ? retryParsed : (retryParsed.sessions || []);
+                    // Re-merge with local sessions
+                    const localMap2 = new Map(sessions.map(s => [s.sessionId, s]));
+                    let reMerged = [...sessions];
+                    for (const rs of freshRemote) {
+                        if (!rs.sessionId) continue;
+                        if (deletedSessionIds.has(rs.sessionId)) continue;
+                        if (!localMap2.has(rs.sessionId)) {
+                            reMerged.push(rs);
+                        } else {
+                            const loc = localMap2.get(rs.sessionId);
+                            if ((rs.version || 1) > (loc.version || 1)) {
+                                const ridx = reMerged.findIndex(s => s.sessionId === rs.sessionId);
+                                if (ridx >= 0) reMerged[ridx] = rs;
+                            }
+                        }
+                    }
+                    sessions = reMerged;
+                    // Strip attachments again for the retry
+                    const retryClean = sessions.map(s => {
+                        const copy = {...s};
+                        if (copy.attachments && copy.attachments.length > 0) {
+                            copy.attachments = copy.attachments.map(att => {
+                                if (att.data && att.data.startsWith('data:')) {
+                                    return { name: att.name, type: att.type, pendingUpload: true };
+                                }
+                                return att;
+                            });
+                        }
+                        return copy;
+                    });
+                    const retryContent = JSON.stringify(retryClean);
+                    const retryPutHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+                    if (sessionsETag) retryPutHeaders['If-Match'] = sessionsETag;
+                    response = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${SP_SESSIONS_FILE}:/content`, {
+                        method: 'PUT',
+                        headers: retryPutHeaders,
+                        body: retryContent
+                    });
+                    if (response.ok) {
+                        console.log('[Concurrency] Retry succeeded after conflict resolution');
+                    }
+                }
+            } catch (retryErr) {
+                console.error('[Concurrency] Retry failed:', retryErr);
+            }
+        }
         
         if (!response.ok) {
             const errText = await response.text();
@@ -2953,6 +3029,8 @@ async function saveAllSessionsToSharePoint() {
             console.error(errMsg);
             if (syncStatus) { syncStatus.textContent = errMsg; syncStatus.style.display = ''; syncStatus.style.color = 'var(--pink-300)'; }
         } else {
+            // Capture the new eTag from the successful write
+            sessionsETag = response.headers.get('ETag') || sessionsETag;
             console.log(`Saved ${cleanSessions.length} sessions to SharePoint (merged with ${remoteSessions.length} remote)`);
             if (syncStatus) { syncStatus.textContent = `Saved (${cleanSessions.length} sessions)`; syncStatus.style.display = ''; syncStatus.style.color = ''; setTimeout(() => { syncStatus.style.display = 'none'; }, 3000); }
             // Clear deleted IDs only after successful save (they no longer exist in remote)
@@ -3246,6 +3324,26 @@ function generateSessionPDF(session, pdfVersion) {
     
     return doc.output('blob');
 }
+
+// Batch upload attachments for a session (sequential, for use in save queue)
+async function uploadAttachmentToSharePoint_batch(session) {
+    if (!session.attachments || session.attachments.length === 0) return;
+    const processedAttachments = [];
+    for (const att of session.attachments) {
+        if (att.data && att.data.startsWith('data:')) {
+            const uploaded = await uploadAttachmentToSharePoint(session.sessionId, att);
+            if (uploaded) {
+                processedAttachments.push(uploaded);
+            } else {
+                processedAttachments.push({ name: att.name, type: att.type, uploadFailed: true });
+            }
+        } else {
+            processedAttachments.push(att);
+        }
+    }
+    session.attachments = processedAttachments;
+}
+
 
 async function uploadSessionPDFToSharePoint(session, pdfVersion) {
     if (!spDataReady) return null;
@@ -3635,7 +3733,9 @@ function softMatchesName(fieldValue, compareName) {
         if (sharedIncludesFirstName) return true;
     }
     // Also check if one string fully contains the other (last-name-only entry)
-    if (a.length >= 4 && (b.includes(a) || a.includes(b))) return true;
+    // Require the shorter string to be at least 8 chars to reduce false positives
+    // (prevents "Joel" matching "Joel Hugo Jr." or common surname collisions)
+    if (a.length >= 8 && b.length >= 8 && (b.includes(a) || a.includes(b))) return true;
     return false;
 }
 
@@ -6811,11 +6911,22 @@ async function sendGraphEmail(toEmail, toName, subject, htmlBody) {
             },
             saveToSentItems: false
         };
-        const resp = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+        let resp = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${mailToken}`, 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
+        // Retry once on transient errors (429 throttle, 503 service unavailable, 504 timeout)
+        if (resp.status === 429 || resp.status === 503 || resp.status === 504) {
+            const retryAfter = parseInt(resp.headers.get('Retry-After') || '3', 10);
+            console.warn(`Email send throttled (${resp.status}), retrying in ${retryAfter}s...`);
+            await new Promise(r => setTimeout(r, retryAfter * 1000));
+            resp = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${mailToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        }
         if (resp.ok) {
             console.log(`Email sent to ${toEmail}`);
         } else {
@@ -7197,40 +7308,45 @@ function saveSession() {
     }
 
     saveSessions();
-    // Sync sessions to SharePoint in background (including attachment uploads)
-    if (spDataReady) {
-        const newSessions = sessions.filter(s => !s._spItemId);
-        newSessions.forEach(s => saveSessionToSharePoint(s));
-        // Also sync edited sessions (those with _spItemId that were modified)
-        if (editingSessionId) {
-            const edited = sessions.find(s => s.sessionId === editingSessionId && s._spItemId);
-            if (edited) saveSessionToSharePoint(edited);
-        }
-    }
     
-    // Generate PDF and upload to SharePoint
+    // Capture state before closing modal
+    const wasEditing = editingSessionId;
+    const justCreated = !wasEditing ? sessions.filter(s => s.createdBy === currentUser.id && s.createdAt && (Date.now() - new Date(s.createdAt).getTime()) < 5000) : [];
+    
+    // Sync sessions to SharePoint via serialized save queue (prevents race conditions)
     if (spDataReady) {
-        if (editingSessionId) {
-            // Editing: generate new version PDF
-            const editedSession = sessions.find(s => s.sessionId === editingSessionId);
-            if (editedSession) {
-                const pdfVer = editedSession.pdfVersion ? editedSession.pdfVersion + 1 : (editedSession.version || 1);
-                uploadSessionPDFToSharePoint(editedSession, pdfVer).then(() => saveSessions());
+        enqueueSave(async () => {
+            // Upload attachments for new sessions first (sequentially)
+            for (const s of justCreated) {
+                await uploadAttachmentToSharePoint_batch(s);
             }
-        } else {
-            // New session(s): generate v1 PDF for each
-            const justCreated = sessions.filter(s => s.createdBy === currentUser.id && s.createdAt && (Date.now() - new Date(s.createdAt).getTime()) < 5000);
-            justCreated.forEach(s => {
-                uploadSessionAttachmentsToFolder(s).then(() => {
-                    uploadSessionPDFToSharePoint(s, 1).then(() => saveSessions());
-                });
-            });
-        }
+            // If editing, upload attachments for the edited session
+            if (wasEditing) {
+                const edited = sessions.find(s => s.sessionId === wasEditing);
+                if (edited) await uploadAttachmentToSharePoint_batch(edited);
+            }
+            // Single atomic save of all sessions (includes merge with remote)
+            await saveAllSessionsToSharePoint();
+            // Generate PDFs after save
+            if (wasEditing) {
+                const editedSession = sessions.find(s => s.sessionId === wasEditing);
+                if (editedSession) {
+                    const pdfVer = editedSession.pdfVersion ? editedSession.pdfVersion + 1 : (editedSession.version || 1);
+                    await uploadSessionPDFToSharePoint(editedSession, pdfVer);
+                    saveSessions(); // persist pdfVersion update
+                }
+            } else {
+                for (const s of justCreated) {
+                    await uploadSessionAttachmentsToFolder(s);
+                    await uploadSessionPDFToSharePoint(s, 1);
+                }
+                saveSessions(); // persist pdfVersion updates
+            }
+        });
     }
     
-    // Send email notifications for newly created sessions
-    if (!editingSessionId) {
-        const justCreated = sessions.filter(s => s.createdBy === currentUser.id && s.createdAt && (Date.now() - new Date(s.createdAt).getTime()) < 5000);
+    // Send email notifications for newly created sessions (non-blocking)
+    if (!wasEditing && justCreated.length > 0) {
         justCreated.forEach(s => notifySessionCreated(s));
     }
     
@@ -7423,16 +7539,18 @@ function acknowledgeSession(sessionId) {
     sessions[idx].ackDate = new Date().toISOString();
     sessions[idx].ackComment = document.getElementById('ackComment')?.value || '';
     saveSessions();
-    if (spDataReady) saveSessionToSharePoint(sessions[idx]);
-    
-    // Generate new PDF version with acknowledgement details
+    const ackSession = sessions[idx];
     if (spDataReady) {
-        const pdfVer = (sessions[idx].pdfVersion || 1) + 1;
-        uploadSessionPDFToSharePoint(sessions[idx], pdfVer).then(() => saveSessions());
+        enqueueSave(async () => {
+            await saveAllSessionsToSharePoint();
+            const pdfVer = (ackSession.pdfVersion || 1) + 1;
+            await uploadSessionPDFToSharePoint(ackSession, pdfVer);
+            saveSessions();
+        });
     }
     
-    // Notify the session creator
-    notifySessionAcknowledged(sessions[idx]);
+    // Notify the session creator (non-blocking)
+    notifySessionAcknowledged(ackSession);
     
     closeModal('viewModal');
     navigateTo(currentPage);
