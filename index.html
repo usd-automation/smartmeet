@@ -1777,6 +1777,55 @@ tbody tr:last-child td { border-bottom: none; }
 .alert-preview-box.preview-warning { background: #FFF8E1; border: 1px solid #FFD54F; color: #5D4200; }
 .alert-preview-box.preview-critical { background: #FDE8E8; border: 1px solid #F48A8A; color: #7A1A1A; }
 
+/* Sync status indicator */
+.sync-status-badge {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-right: 12px;
+    white-space: nowrap;
+    transition: all 0.3s ease;
+}
+.sync-status-badge.syncing {
+    display: inline-flex;
+    background: #E1F0FF;
+    color: #0070F2;
+    border: 1px solid #A3D0FF;
+}
+.sync-status-badge.pending-retry {
+    display: inline-flex;
+    background: #FFF8E1;
+    color: #B8860B;
+    border: 1px solid #FFD54F;
+}
+.sync-status-badge.sync-error {
+    display: inline-flex;
+    background: #FDE8E8;
+    color: #C0392B;
+    border: 1px solid #F48A8A;
+}
+.sync-status-badge.sync-ok {
+    display: inline-flex;
+    background: #E8F8E8;
+    color: #1B7A1B;
+    border: 1px solid #8AD48A;
+}
+.sync-pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: syncPulse 1.2s ease-in-out infinite;
+}
+@keyframes syncPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+}
+
 .ann-editor-wrap {
     border: 1.5px solid var(--gray-300);
     border-radius: 8px;
@@ -2362,6 +2411,7 @@ tbody tr:last-child td { border-bottom: none; }
         <div class="top-bar">
             <h1 id="pageTitle">Dashboard</h1>
             <div class="top-bar-actions">
+                <span class="sync-status-badge" id="syncStatusBadge"><span class="sync-pulse"></span> <span id="syncStatusText"></span></span>
                 <span id="spSyncStatus" style="font-size:11px;color:var(--gray-400);margin-right:12px;display:none;"></span>
                 <button class="btn btn-primary" id="newSessionBtn" onclick="openNewSession()" style="display:none;">+ New Session</button>
             </div>
@@ -2822,6 +2872,186 @@ const QUILL_TOOLBAR_CONFIG = [
     ['clean']
 ];
 
+// ==================== INLINE IMAGE HANDLING ====================
+// When users paste screenshots into Quill editors, the images are embedded as base64.
+// These can be several MB each and blow past localStorage limits.
+// This system: (1) intercepts pasted images, (2) stores them in a separate in-memory map,
+// (3) replaces the base64 <img> with a lightweight placeholder in the HTML,
+// (4) restores them when needed (draft resume, session submit, SP upload).
+
+let _inlineImages = {}; // Map: imageId -> { data: 'data:image/...;base64,...', name: 'paste_xxx.png' }
+let _inlineImageCounter = 0;
+
+function generateInlineImageId() {
+    _inlineImageCounter++;
+    return 'img_' + Date.now() + '_' + _inlineImageCounter;
+}
+
+// Register a Quill image paste/drop handler on any Quill instance
+function registerQuillImageHandler(quill) {
+    quill.root.addEventListener('paste', function(e) {
+        const clipboardData = e.clipboardData || window.clipboardData;
+        if (!clipboardData || !clipboardData.items) return;
+        
+        for (let i = 0; i < clipboardData.items.length; i++) {
+            const item = clipboardData.items[i];
+            if (item.type.indexOf('image') !== -1) {
+                e.preventDefault();
+                const file = item.getAsFile();
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = function(ev) {
+                    const base64 = ev.target.result;
+                    const imgId = generateInlineImageId();
+                    const ext = file.type.split('/')[1] || 'png';
+                    _inlineImages[imgId] = {
+                        data: base64,
+                        name: 'paste_' + imgId + '.' + ext,
+                        type: file.type
+                    };
+                    
+                    // Insert a visible image with a data attribute marker (shows in editor, extractable later)
+                    const range = quill.getSelection(true);
+                    quill.insertEmbed(range.index, 'image', base64);
+                    // Tag the <img> with our inline ID so we can find it later
+                    setTimeout(() => {
+                        const imgs = quill.root.querySelectorAll('img[src^="data:"]');
+                        imgs.forEach(img => {
+                            if (img.src === base64 && !img.dataset.inlineId) {
+                                img.dataset.inlineId = imgId;
+                                img.style.maxWidth = '100%';
+                                img.style.borderRadius = '6px';
+                                img.style.margin = '8px 0';
+                            }
+                        });
+                    }, 50);
+                    
+                    console.log('[InlineImage] Captured pasted image:', imgId, file.type, Math.round(base64.length / 1024) + 'KB');
+                };
+                reader.readAsDataURL(file);
+                return; // Handle only the first image
+            }
+        }
+    });
+}
+
+// Extract base64 images from HTML, replace with lightweight placeholders
+// Returns { cleanHtml, images: [{id, data, name, type}] }
+function extractInlineImagesFromHtml(html) {
+    if (!html || !html.includes('data:image')) return { cleanHtml: html, images: [] };
+    
+    const images = [];
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    
+    div.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src') || '';
+        if (src.startsWith('data:image')) {
+            // Check if already tagged
+            let imgId = img.dataset.inlineId;
+            if (!imgId) {
+                imgId = generateInlineImageId();
+            }
+            
+            // Store the image data
+            const typeMatch = src.match(/data:(image\/[^;]+)/);
+            const mimeType = typeMatch ? typeMatch[1] : 'image/png';
+            const ext = mimeType.split('/')[1] || 'png';
+            
+            images.push({
+                id: imgId,
+                data: src,
+                name: 'paste_' + imgId + '.' + ext,
+                type: mimeType
+            });
+            
+            // Also store in global map
+            _inlineImages[imgId] = { data: src, name: 'paste_' + imgId + '.' + ext, type: mimeType };
+            
+            // Replace with placeholder
+            img.setAttribute('src', '');
+            img.setAttribute('data-inline-id', imgId);
+            img.setAttribute('data-inline-placeholder', 'true');
+            img.setAttribute('alt', '[Pasted Image: ' + imgId + ']');
+            img.style.display = 'none';
+        }
+    });
+    
+    return { cleanHtml: div.innerHTML, images };
+}
+
+// Restore base64 images back into HTML from the _inlineImages map or provided images array
+function restoreInlineImagesInHtml(html, images) {
+    if (!html) return html;
+    
+    // Build lookup from provided images array
+    const lookup = {};
+    if (images && images.length > 0) {
+        images.forEach(img => {
+            lookup[img.id] = img.data;
+            _inlineImages[img.id] = img; // Also repopulate global map
+        });
+    }
+    
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    
+    div.querySelectorAll('img[data-inline-placeholder]').forEach(img => {
+        const imgId = img.getAttribute('data-inline-id');
+        const imageData = lookup[imgId] || (_inlineImages[imgId] && _inlineImages[imgId].data);
+        if (imageData) {
+            img.setAttribute('src', imageData);
+            img.removeAttribute('data-inline-placeholder');
+            img.style.display = '';
+            img.style.maxWidth = '100%';
+            img.style.borderRadius = '6px';
+            img.style.margin = '8px 0';
+        }
+    });
+    
+    return div.innerHTML;
+}
+
+// Collect all inline images from all Quill editors and Comments/Feedback
+function collectAllInlineImages() {
+    const allImages = [];
+    
+    // From dynamic field Quill editors
+    Object.keys(_quillInstances).forEach(fid => {
+        const q = _quillInstances[fid];
+        if (!q) return;
+        q.root.querySelectorAll('img[src^="data:image"]').forEach(img => {
+            let imgId = img.dataset.inlineId;
+            if (!imgId) { imgId = generateInlineImageId(); img.dataset.inlineId = imgId; }
+            const src = img.getAttribute('src');
+            const typeMatch = src.match(/data:(image\/[^;]+)/);
+            const mimeType = typeMatch ? typeMatch[1] : 'image/png';
+            allImages.push({ id: imgId, data: src, name: 'paste_' + imgId + '.' + (mimeType.split('/')[1] || 'png'), type: mimeType });
+        });
+    });
+    
+    // From Comments/Feedback Quill
+    if (_commentsFeedbackQuill) {
+        _commentsFeedbackQuill.root.querySelectorAll('img[src^="data:image"]').forEach(img => {
+            let imgId = img.dataset.inlineId;
+            if (!imgId) { imgId = generateInlineImageId(); img.dataset.inlineId = imgId; }
+            const src = img.getAttribute('src');
+            const typeMatch = src.match(/data:(image\/[^;]+)/);
+            const mimeType = typeMatch ? typeMatch[1] : 'image/png';
+            allImages.push({ id: imgId, data: src, name: 'paste_' + imgId + '.' + (mimeType.split('/')[1] || 'png'), type: mimeType });
+        });
+    }
+    
+    return allImages;
+}
+
+// Strip all base64 images from HTML and replace with alt-text placeholders (for storage)
+function stripBase64ImagesFromHtml(html) {
+    if (!html || !html.includes('data:image')) return html;
+    return extractInlineImagesFromHtml(html).cleanHtml;
+}
+
 // ===== SHAREPOINT DATA LAYER (Graph API + Sites.Selected) =====
 // Stores sessions as a JSON file in SharePoint document library via Graph API.
 // Uses Files.ReadWrite.All + Sites.Selected (delegated, admin consented for SAP SE).
@@ -2844,6 +3074,100 @@ function enqueueSave(fn) {
 let spDriveId = null;
 let spSiteId = null;
 let graphToken = null;
+
+// ==================== SYNC RETRY QUEUE ====================
+// Persistent retry system: tracks whether the last save succeeded.
+// If saveAllSessionsToSharePoint fails, the retry timer keeps re-attempting
+// until the data reaches SharePoint.
+const SYNC_RETRY_KEY = 'smartmeet_syncPending';
+const SYNC_RETRY_INTERVAL_MS = 60000; // Retry every 60 seconds
+const SYNC_MAX_RETRIES = 50; // Max retries before giving up (50 min)
+let _syncRetryInterval = null;
+let _syncRetryCount = 0;
+let _lastSyncOk = true;
+
+function markSyncPending() {
+    _lastSyncOk = false;
+    localStorage.setItem(SYNC_RETRY_KEY, JSON.stringify({
+        pending: true,
+        since: new Date().toISOString(),
+        retryCount: _syncRetryCount
+    }));
+    updateSyncStatusBadge('pending-retry', 'Sync pending — retrying...');
+}
+
+function markSyncSuccess() {
+    _lastSyncOk = true;
+    _syncRetryCount = 0;
+    localStorage.removeItem(SYNC_RETRY_KEY);
+    updateSyncStatusBadge('sync-ok', 'Synced');
+    // Auto-hide after 4 seconds
+    setTimeout(() => {
+        const badge = document.getElementById('syncStatusBadge');
+        if (badge && badge.classList.contains('sync-ok')) {
+            badge.className = 'sync-status-badge';
+        }
+    }, 4000);
+}
+
+function markSyncError(msg) {
+    _lastSyncOk = false;
+    updateSyncStatusBadge('sync-error', msg || 'Sync failed');
+}
+
+function updateSyncStatusBadge(state, text) {
+    const badge = document.getElementById('syncStatusBadge');
+    const textEl = document.getElementById('syncStatusText');
+    if (!badge || !textEl) return;
+    badge.className = 'sync-status-badge ' + state;
+    textEl.textContent = text;
+}
+
+function startSyncRetryLoop() {
+    stopSyncRetryLoop();
+    // Check if there's a pending sync from a previous page load
+    try {
+        const raw = localStorage.getItem(SYNC_RETRY_KEY);
+        if (raw) {
+            const data = JSON.parse(raw);
+            if (data.pending) {
+                _lastSyncOk = false;
+                _syncRetryCount = data.retryCount || 0;
+                updateSyncStatusBadge('pending-retry', 'Sync pending — retrying...');
+            }
+        }
+    } catch (e) {}
+    
+    _syncRetryInterval = setInterval(async () => {
+        if (_lastSyncOk || !spDataReady) return; // Nothing to retry
+        
+        _syncRetryCount++;
+        if (_syncRetryCount > SYNC_MAX_RETRIES) {
+            markSyncError('Sync failed after ' + SYNC_MAX_RETRIES + ' retries');
+            stopSyncRetryLoop();
+            return;
+        }
+        
+        console.log('[SyncRetry] Attempt ' + _syncRetryCount + '/' + SYNC_MAX_RETRIES + '...');
+        updateSyncStatusBadge('syncing', 'Syncing (attempt ' + _syncRetryCount + ')...');
+        
+        try {
+            await saveAllSessionsToSharePoint();
+            // If saveAllSessionsToSharePoint completed without throwing, check if it actually succeeded
+            // The function sets _lastSyncOk via markSyncSuccess/markSyncPending internally
+        } catch (e) {
+            console.warn('[SyncRetry] Attempt ' + _syncRetryCount + ' failed:', e.message);
+            markSyncPending();
+        }
+    }, SYNC_RETRY_INTERVAL_MS);
+}
+
+function stopSyncRetryLoop() {
+    if (_syncRetryInterval) {
+        clearInterval(_syncRetryInterval);
+        _syncRetryInterval = null;
+    }
+}
 
 // Get Graph API access token (uses cached token from MSAL - no network call if fresh)
 async function getGraphToken() {
@@ -2987,6 +3311,7 @@ async function loadSessionsFromSharePoint() {
 async function saveAllSessionsToSharePoint() {
     if (!spDataReady) return;
     const syncStatus = document.getElementById('spSyncStatus');
+    updateSyncStatusBadge('syncing', 'Syncing...');
     try {
         const driveId = await discoverDriveId();
         const token = await getGraphToken();
@@ -3046,9 +3371,10 @@ async function saveAllSessionsToSharePoint() {
         // Keep localStorage in sync after merge
         saveSessionsToLocalStorage();
         
-        // STEP 3: Strip base64 attachment data before saving
+        // STEP 3: Strip base64 data (attachments AND inline images in field content) before saving
         const cleanSessions = sessions.map(s => {
             const copy = {...s};
+            // Strip attachment base64
             if (copy.attachments && copy.attachments.length > 0) {
                 copy.attachments = copy.attachments.map(att => {
                     if (att.data && att.data.startsWith('data:')) {
@@ -3056,6 +3382,22 @@ async function saveAllSessionsToSharePoint() {
                     }
                     return att;
                 });
+            }
+            // Strip inline base64 images from fieldData HTML values
+            if (copy.fieldData) {
+                const cleanFieldData = {};
+                Object.entries(copy.fieldData).forEach(([key, value]) => {
+                    if (value && typeof value === 'string' && value.includes('data:image')) {
+                        cleanFieldData[key] = stripBase64ImagesFromHtml(value);
+                    } else {
+                        cleanFieldData[key] = value;
+                    }
+                });
+                copy.fieldData = cleanFieldData;
+            }
+            // Strip inline base64 images from commentsFeedback
+            if (copy.commentsFeedback && typeof copy.commentsFeedback === 'string' && copy.commentsFeedback.includes('data:image')) {
+                copy.commentsFeedback = stripBase64ImagesFromHtml(copy.commentsFeedback);
             }
             return copy;
         });
@@ -3110,7 +3452,7 @@ async function saveAllSessionsToSharePoint() {
                             }
                         }
                     }
-                    // Strip attachments again for the retry
+                    // Strip base64 data again for the retry (attachments + inline images)
                     const retryClean = sessions.map(s => {
                         const copy = {...s};
                         if (copy.attachments && copy.attachments.length > 0) {
@@ -3120,6 +3462,16 @@ async function saveAllSessionsToSharePoint() {
                                 }
                                 return att;
                             });
+                        }
+                        if (copy.fieldData) {
+                            const cf = {};
+                            Object.entries(copy.fieldData).forEach(([k, v]) => {
+                                cf[k] = (v && typeof v === 'string' && v.includes('data:image')) ? stripBase64ImagesFromHtml(v) : v;
+                            });
+                            copy.fieldData = cf;
+                        }
+                        if (copy.commentsFeedback && typeof copy.commentsFeedback === 'string' && copy.commentsFeedback.includes('data:image')) {
+                            copy.commentsFeedback = stripBase64ImagesFromHtml(copy.commentsFeedback);
                         }
                         return copy;
                     });
@@ -3145,6 +3497,7 @@ async function saveAllSessionsToSharePoint() {
             const errMsg = `Save failed: ${response.status} - ${errText.substring(0, 100)}`;
             console.error(errMsg);
             if (syncStatus) { syncStatus.textContent = errMsg; syncStatus.style.display = ''; syncStatus.style.color = 'var(--pink-300)'; }
+            markSyncPending(); // Flag for retry
         } else {
             // Capture the new eTag from the successful write
             sessionsETag = response.headers.get('ETag') || sessionsETag;
@@ -3152,10 +3505,12 @@ async function saveAllSessionsToSharePoint() {
             if (syncStatus) { syncStatus.textContent = `Saved (${cleanSessions.length} sessions)`; syncStatus.style.display = ''; syncStatus.style.color = ''; setTimeout(() => { syncStatus.style.display = 'none'; }, 3000); }
             // Clear deleted IDs only after successful save (they no longer exist in remote)
             deletedSessionIds.clear();
+            markSyncSuccess(); // Clear retry queue
         }
     } catch (error) {
         console.error('Error saving sessions to SharePoint:', error);
         if (syncStatus) { syncStatus.textContent = `Save error: ${error.message}`; syncStatus.style.display = ''; syncStatus.style.color = 'var(--pink-300)'; }
+        markSyncPending(); // Flag for retry
     }
 }
 
@@ -3560,6 +3915,17 @@ function saveSessionsToLocalStorage() {
                     }
                     return att;
                 });
+            }
+            // Strip inline base64 images from field content
+            if (copy.fieldData) {
+                const cf = {};
+                Object.entries(copy.fieldData).forEach(([k, v]) => {
+                    cf[k] = (v && typeof v === 'string' && v.includes('data:image')) ? stripBase64ImagesFromHtml(v) : v;
+                });
+                copy.fieldData = cf;
+            }
+            if (copy.commentsFeedback && typeof copy.commentsFeedback === 'string' && copy.commentsFeedback.includes('data:image')) {
+                copy.commentsFeedback = stripBase64ImagesFromHtml(copy.commentsFeedback);
             }
             return copy;
         });
@@ -4553,6 +4919,9 @@ function login(user) {
     
     // Start polling settings for system alert changes from other admins
     startSystemAlertPolling();
+    
+    // Start background sync retry loop (retries failed SharePoint saves)
+    startSyncRetryLoop();
 }
 
 function logout() {
@@ -4563,6 +4932,9 @@ function logout() {
     
     // Stop system alert polling
     stopSystemAlertPolling();
+    
+    // Stop sync retry loop
+    stopSyncRetryLoop();
     
     // Clear MSAL session
     if (msalInstance) {
@@ -6370,6 +6742,7 @@ function onCategoryChange() {
                 modules: { toolbar: QUILL_TOOLBAR_CONFIG }
             });
             _quillInstances[fieldId] = quill;
+            registerQuillImageHandler(quill);
             // Restore cached content if available
             const cachedVal = _categoryFieldCache[fieldId] || '';
             if (cachedVal) {
@@ -6424,11 +6797,36 @@ function saveDraft() {
         return;
     }
     
+    // Extract inline base64 images from field data and comments to keep draft size manageable
+    const draftFieldData = {};
+    const draftInlineImages = [];
+    if (fieldData) {
+        Object.entries(fieldData).forEach(([key, value]) => {
+            if (value && typeof value === 'string' && value.includes('data:image')) {
+                const extracted = extractInlineImagesFromHtml(value);
+                draftFieldData[key] = extracted.cleanHtml;
+                draftInlineImages.push(...extracted.images);
+            } else {
+                draftFieldData[key] = value;
+            }
+        });
+    }
+    
+    let draftCommentsFeedback = getCommentsFeedbackValue();
+    if (draftCommentsFeedback && draftCommentsFeedback.includes('data:image')) {
+        const extracted = extractInlineImagesFromHtml(draftCommentsFeedback);
+        draftCommentsFeedback = extracted.cleanHtml;
+        draftInlineImages.push(...extracted.images);
+    }
+    
     const draft = { 
         id: currentDraftId || generateDraftId(),
-        sessionType, date, outlier, categories, attendees, fieldData,
-        commentsFeedback: getCommentsFeedbackValue(),
+        sessionType, date, outlier, categories, attendees,
+        fieldData: draftFieldData,
+        commentsFeedback: draftCommentsFeedback,
         attachments: pendingAttachments.map(a => ({name: a.name, type: a.type, data: a.data})),
+        // Store only the image metadata (id, name, type) in the draft — NOT the base64 data
+        inlineImageRefs: draftInlineImages.map(img => ({ id: img.id, name: img.name, type: img.type })),
         savedAt: new Date().toISOString(), 
         userId: currentUser.id,
         userName: currentUser.name
@@ -6445,7 +6843,27 @@ function saveDraft() {
     } else {
         allDrafts.push(draft);
     }
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(allDrafts));
+    
+    try {
+        localStorage.setItem(DRAFTS_KEY, JSON.stringify(allDrafts));
+    } catch (e) {
+        if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) {
+            console.error('[Draft] localStorage quota exceeded — attempting to save without attachment data');
+            // Retry without attachment base64 data (keep metadata only)
+            draft.attachments = draft.attachments.map(a => ({ name: a.name, type: a.type }));
+            const idx2 = allDrafts.findIndex(d => d.id === draft.id);
+            if (idx2 >= 0) allDrafts[idx2] = draft;
+            try {
+                localStorage.setItem(DRAFTS_KEY, JSON.stringify(allDrafts));
+            } catch (e2) {
+                console.error('[Draft] localStorage save failed even without attachments:', e2);
+                showNotification('Draft could not be saved — storage is full. Please submit the session or remove old drafts.', 'warning');
+                return;
+            }
+        } else {
+            console.error('[Draft] localStorage save error:', e);
+        }
+    }
     updateDraftBadge();
 }
 
@@ -6600,24 +7018,30 @@ function restoreDraft(draft) {
                     Object.entries(draft.fieldData).forEach(([key, value]) => {
                         const [category, fieldName] = key.split('__');
                         const fieldId = `df_${category.replace(/[^a-zA-Z0-9]/g,'_')}_${fieldName}`;
+                        // Re-inject any inline images that are still in memory
+                        let restoredValue = value;
+                        if (value && typeof value === 'string') {
+                            restoredValue = restoreInlineImagesInHtml(value);
+                        }
                         if (_quillInstances[fieldId]) {
-                            if (value && value.includes('<')) {
-                                _quillInstances[fieldId].root.innerHTML = value;
-                            } else if (value) {
-                                _quillInstances[fieldId].setText(value);
+                            if (restoredValue && restoredValue.includes('<')) {
+                                _quillInstances[fieldId].root.innerHTML = restoredValue;
+                            } else if (restoredValue) {
+                                _quillInstances[fieldId].setText(restoredValue);
                             }
                         } else {
                             const el = document.getElementById(fieldId);
-                            if (el) el.value = value;
+                            if (el) el.value = restoredValue;
                         }
                     });
                 }
-                // Restore comments/feedback
+                // Restore comments/feedback (with inline images if still in memory)
                 if (draft.commentsFeedback && _commentsFeedbackQuill) {
-                    if (draft.commentsFeedback.includes('<')) {
-                        _commentsFeedbackQuill.root.innerHTML = draft.commentsFeedback;
+                    let restoredCf = restoreInlineImagesInHtml(draft.commentsFeedback);
+                    if (restoredCf.includes('<')) {
+                        _commentsFeedbackQuill.root.innerHTML = restoredCf;
                     } else {
-                        _commentsFeedbackQuill.setText(draft.commentsFeedback);
+                        _commentsFeedbackQuill.setText(restoredCf);
                     }
                 }
             }, 100);
@@ -6655,6 +7079,7 @@ function initCommentsFeedbackQuill() {
         placeholder: 'Add any additional comments or feedback (optional)',
         modules: { toolbar: QUILL_TOOLBAR_CONFIG }
     });
+    registerQuillImageHandler(_commentsFeedbackQuill);
 }
 
 function getCommentsFeedbackValue() {
