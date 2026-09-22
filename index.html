@@ -1684,6 +1684,99 @@ tbody tr:last-child td { border-bottom: none; }
 .ann-toggle.active .ann-toggle-knob {
     transform: translateX(20px);
 }
+
+/* ===== SYSTEM ALERT BANNER ===== */
+.system-alert-banner {
+    display: none;
+    padding: 14px 24px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.5;
+    position: relative;
+    border-radius: 10px;
+    margin: 0 0 16px 0;
+    align-items: center;
+    gap: 12px;
+    animation: alertSlideIn 0.35s ease-out;
+}
+.system-alert-banner.visible {
+    display: flex;
+}
+@keyframes alertSlideIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.system-alert-banner .alert-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+.system-alert-banner .alert-body {
+    flex: 1;
+}
+.system-alert-banner .alert-title {
+    font-weight: 700;
+    font-size: 13px;
+    margin-bottom: 2px;
+}
+.system-alert-banner .alert-message {
+    font-size: 12.5px;
+    opacity: 0.9;
+}
+.system-alert-banner .alert-meta {
+    font-size: 10.5px;
+    opacity: 0.6;
+    margin-top: 4px;
+}
+/* Info */
+.system-alert-banner.alert-info {
+    background: linear-gradient(135deg, #E1F0FF 0%, #D0E8FF 100%);
+    border: 1px solid #A3D0FF;
+    color: #003D7A;
+}
+.system-alert-banner.alert-info .alert-icon {
+    background: #0070F2;
+    color: white;
+}
+/* Warning */
+.system-alert-banner.alert-warning {
+    background: linear-gradient(135deg, #FFF8E1 0%, #FFECB3 100%);
+    border: 1px solid #FFD54F;
+    color: #5D4200;
+}
+.system-alert-banner.alert-warning .alert-icon {
+    background: #F5A623;
+    color: white;
+}
+/* Critical */
+.system-alert-banner.alert-critical {
+    background: linear-gradient(135deg, #FDE8E8 0%, #FCCFCF 100%);
+    border: 1px solid #F48A8A;
+    color: #7A1A1A;
+}
+.system-alert-banner.alert-critical .alert-icon {
+    background: #E53935;
+    color: white;
+}
+/* Alert preview in settings */
+.alert-preview-box {
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-top: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: none;
+}
+.alert-preview-box.visible { display: block; }
+.alert-preview-box.preview-info { background: #E1F0FF; border: 1px solid #A3D0FF; color: #003D7A; }
+.alert-preview-box.preview-warning { background: #FFF8E1; border: 1px solid #FFD54F; color: #5D4200; }
+.alert-preview-box.preview-critical { background: #FDE8E8; border: 1px solid #F48A8A; color: #7A1A1A; }
+
 .ann-editor-wrap {
     border: 1.5px solid var(--gray-300);
     border-radius: 8px;
@@ -2274,6 +2367,16 @@ tbody tr:last-child td { border-bottom: none; }
             </div>
         </div>
 
+        <!-- System Alert Banner (controlled from Settings, visible to all users) -->
+        <div class="system-alert-banner" id="systemAlertBanner">
+            <div class="alert-icon" id="systemAlertIcon"></div>
+            <div class="alert-body">
+                <div class="alert-title" id="systemAlertTitle"></div>
+                <div class="alert-message" id="systemAlertMessage"></div>
+                <div class="alert-meta" id="systemAlertMeta"></div>
+            </div>
+        </div>
+
         <div class="page-content" id="pageContent">
             <!-- Pages rendered dynamically -->
         </div>
@@ -2704,6 +2807,7 @@ let currentPage = 'dashboard';
 let sessions = [];
 let deletedSessionIds = new Set(); // Track locally-deleted sessions to prevent merge resurrection
 let editingSessionId = null;
+let _editModeConfirmed = false; // Guard: only editSession() sets this true
 let pendingAttachments = [];
 let imageZoomLevel = 1;
 let _categoryFieldCache = {};
@@ -2903,10 +3007,13 @@ async function saveAllSessionsToSharePoint() {
             console.warn('Could not read remote sessions for merge, proceeding with overwrite:', e.message);
         }
 
-        // STEP 2: Merge - combine local sessions with any remote sessions not in local
-        // Use sessionId as the unique key
+        // STEP 2: Additive merge — mutate the existing sessions array in place
+        // CRITICAL: Do NOT replace the sessions array reference (sessions = ...)
+        // because other code may have pushed new sessions between the read and now.
+        // Instead: (a) add remote-only sessions, (b) update local sessions where remote is newer.
         const localMap = new Map(sessions.map(s => [s.sessionId, s]));
-        let merged = [...sessions]; // Start with local sessions
+        let addedCount = 0;
+        let updatedCount = 0;
         
         for (const remote of remoteSessions) {
             if (!remote.sessionId) continue;
@@ -2914,22 +3021,30 @@ async function saveAllSessionsToSharePoint() {
             if (deletedSessionIds.has(remote.sessionId)) continue;
             if (!localMap.has(remote.sessionId)) {
                 // Remote session not in local - it was created by another user, add it
-                merged.push(remote);
+                sessions.push(remote);
+                localMap.set(remote.sessionId, remote);
+                addedCount++;
             } else {
-                // Session exists in both - keep the one with the higher version or more recent edit
+                // Session exists in both - keep the one with the higher version
                 const local = localMap.get(remote.sessionId);
                 const localVersion = local.version || 1;
                 const remoteVersion = remote.version || 1;
                 if (remoteVersion > localVersion) {
-                    // Remote is newer, replace local
-                    const idx = merged.findIndex(s => s.sessionId === remote.sessionId);
-                    if (idx >= 0) merged[idx] = remote;
+                    // Remote is newer, update in place
+                    const idx = sessions.findIndex(s => s.sessionId === remote.sessionId);
+                    if (idx >= 0) {
+                        sessions[idx] = remote;
+                        localMap.set(remote.sessionId, remote);
+                        updatedCount++;
+                    }
                 }
             }
         }
         
-        // Update in-memory sessions with merged result
-        sessions = merged;
+        console.log(`[SP Merge] Added ${addedCount} remote-only sessions, updated ${updatedCount} sessions. Total: ${sessions.length}`);
+        
+        // Keep localStorage in sync after merge
+        saveSessionsToLocalStorage();
         
         // STEP 3: Strip base64 attachment data before saving
         const cleanSessions = sessions.map(s => {
@@ -2976,23 +3091,25 @@ async function saveAllSessionsToSharePoint() {
                     const retryText = await retryReadResp.text();
                     const retryParsed = JSON.parse(retryText);
                     const freshRemote = Array.isArray(retryParsed) ? retryParsed : (retryParsed.sessions || []);
-                    // Re-merge with local sessions
+                    // Re-merge with local sessions (additive, same as primary merge)
                     const localMap2 = new Map(sessions.map(s => [s.sessionId, s]));
-                    let reMerged = [...sessions];
                     for (const rs of freshRemote) {
                         if (!rs.sessionId) continue;
                         if (deletedSessionIds.has(rs.sessionId)) continue;
                         if (!localMap2.has(rs.sessionId)) {
-                            reMerged.push(rs);
+                            sessions.push(rs);
+                            localMap2.set(rs.sessionId, rs);
                         } else {
                             const loc = localMap2.get(rs.sessionId);
                             if ((rs.version || 1) > (loc.version || 1)) {
-                                const ridx = reMerged.findIndex(s => s.sessionId === rs.sessionId);
-                                if (ridx >= 0) reMerged[ridx] = rs;
+                                const ridx = sessions.findIndex(s => s.sessionId === rs.sessionId);
+                                if (ridx >= 0) {
+                                    sessions[ridx] = rs;
+                                    localMap2.set(rs.sessionId, rs);
+                                }
                             }
                         }
                     }
-                    sessions = reMerged;
                     // Strip attachments again for the retry
                     const retryClean = sessions.map(s => {
                         const copy = {...s};
@@ -4425,11 +4542,17 @@ function login(user) {
     navigateTo('dashboard');
     updateDraftBadge();
     
+    // Show system alert banner if one is active
+    refreshSystemAlertBanner();
+    
     // Show announcement popup after a brief delay
     setTimeout(() => showAnnouncementIfEnabled(), 500);
     
     // Initialize SharePoint connection in background (delay to let login interaction fully complete)
     setTimeout(() => initSharePointConnection(), 2000);
+    
+    // Start polling settings for system alert changes from other admins
+    startSystemAlertPolling();
 }
 
 function logout() {
@@ -4437,6 +4560,9 @@ function logout() {
     localStorage.removeItem('smartmeet_currentUser');
     document.getElementById('appShell').classList.remove('active');
     document.getElementById('loginScreen').style.display = '';
+    
+    // Stop system alert polling
+    stopSystemAlertPolling();
     
     // Clear MSAL session
     if (msalInstance) {
@@ -4468,6 +4594,9 @@ function navigateTo(page) {
     };
     document.getElementById('pageTitle').textContent = titles[page] || 'Dashboard';
     document.getElementById('newSessionBtn').style.display = ((page === 'sessions') && canCreateSession(currentUser)) ? '' : 'none';
+    
+    // Refresh system alert banner on every page navigation
+    refreshSystemAlertBanner();
     
     // Render immediately for fast UI
     renderPage(page);
@@ -4506,6 +4635,9 @@ async function refreshAppData() {
             if (freshOriginal) originalUser = freshOriginal;
         }
         await loadSessionsFromSharePoint();
+        // Also refresh settings (picks up system alert changes from other admins)
+        await loadSettingsFromSharePoint();
+        refreshSystemAlertBanner();
     } catch(e) {
         console.warn('[SmartMeet] Background refresh failed:', e.message);
     }
@@ -6400,6 +6532,7 @@ function resumeDraft(draftId) {
     if (!draft) { showNotification('Draft not found', 'warning'); return; }
     currentDraftId = draft.id;
     editingSessionId = null;
+    _editModeConfirmed = false;
     pendingAttachments = [];
     document.getElementById('sessionModalTitle').textContent = 'New Coaching Session';
     document.getElementById('fSessionType').value = '';
@@ -6533,39 +6666,71 @@ function getCommentsFeedbackValue() {
 }
 
 function openNewSession() {
+    console.log('[openNewSession] Starting nuclear form reset...');
+    
+    // ── 1. Reset ALL state variables ──
     editingSessionId = null;
+    _editModeConfirmed = false; // Guard: only editSession() sets this
     currentDraftId = generateDraftId(); // New draft for new session
     pendingAttachments = [];
     _categoryFieldCache = {};
+    selectedAttendeesList = [];
+    
+    // ── 2. Destroy ALL existing Quill editor instances (prevents stale content leaking) ──
+    Object.keys(_quillInstances).forEach(fid => {
+        try {
+            const q = _quillInstances[fid];
+            if (q && q.root && q.root.parentNode) {
+                q.root.innerHTML = '';
+            }
+        } catch (e) { console.warn('[openNewSession] Quill cleanup error:', fid, e); }
+    });
+    _quillInstances = {};
+    
+    // ── 3. Clear every form element inside the modal body ──
     document.getElementById('sessionModalTitle').textContent = 'New Coaching Session';
     document.getElementById('fSessionType').value = '';
     document.getElementById('fCategoryContainer').innerHTML = '';
-    
-    // Show/hide Minutes of Meeting option based on user permissions
-    const momOption = document.querySelector('#fSessionType option[value="Minutes of Meeting"]');
-    if (momOption) momOption.style.display = canCreateMoM(currentUser) ? '' : 'none';
-    document.getElementById('fDate').value = new Date().toISOString().split('T')[0];
-    document.getElementById('fDate').max = new Date().toISOString().split('T')[0];
-    document.getElementById('fOutlier').value = 'No';
     document.getElementById('dynamicFieldsContainer').innerHTML = '';
     document.getElementById('attachmentList').innerHTML = '';
     document.getElementById('attendeeSearch').value = '';
     document.getElementById('attendeeDropdown').classList.remove('open');
     
-    // Initialize Comments/Feedback Quill editor
-    initCommentsFeedbackQuill();
-    if (_commentsFeedbackQuill) _commentsFeedbackQuill.setText('');
+    // Date reset
+    const todayStr = new Date().toISOString().split('T')[0];
+    document.getElementById('fDate').value = todayStr;
+    document.getElementById('fDate').max = todayStr;
     
-    // Reset outlier toggle
+    // Outlier reset
+    document.getElementById('fOutlier').value = 'No';
     const toggle = document.getElementById('outlierToggle');
     toggle.classList.remove('active');
     document.getElementById('outlierLabel').textContent = 'No';
     
-    populateAttendees();
-    openModal('sessionModal');
+    // Show/hide Minutes of Meeting option based on user permissions
+    const momOption = document.querySelector('#fSessionType option[value="Minutes of Meeting"]');
+    if (momOption) momOption.style.display = canCreateMoM(currentUser) ? '' : 'none';
     
-    // Start auto-saving
+    // ── 4. Rebuild Comments/Feedback Quill from scratch ──
+    // Force-destroy the existing instance so initCommentsFeedbackQuill creates a fresh one
+    if (_commentsFeedbackQuill) {
+        try { _commentsFeedbackQuill.root.innerHTML = ''; } catch (e) {}
+        _commentsFeedbackQuill = null;
+    }
+    const cfEditor = document.getElementById('fCommentsFeedbackEditor');
+    if (cfEditor) cfEditor.innerHTML = '';
+    initCommentsFeedbackQuill();
+    if (_commentsFeedbackQuill) _commentsFeedbackQuill.setText('');
+    
+    // ── 5. Reset attendee list and chips ──
+    populateAttendees();
+    renderSelectedChips();
+    
+    // ── 6. Open modal and start draft auto-save ──
+    openModal('sessionModal');
     startDraftAutoSave();
+    
+    console.log('[openNewSession] Form reset complete. editingSessionId:', editingSessionId, 'selectedAttendees:', selectedAttendeesList.length);
 }
 
 function populateAttendees(allUsers) {
@@ -6720,6 +6885,7 @@ function editSession(sessionId) {
     if (!session) return;
     
     editingSessionId = sessionId;
+    _editModeConfirmed = true; // Only this function sets the edit guard
     pendingAttachments = session.attachments ? [...session.attachments] : [];
     _categoryFieldCache = {};
     document.getElementById('sessionModalTitle').textContent = `Edit Session ${sessionId}`;
@@ -7243,6 +7409,13 @@ function saveSession() {
     
     const fieldData = collectDynamicFields();
 
+    // GUARD: Only allow edit-mode if _editModeConfirmed was set by editSession()
+    // This prevents stale editingSessionId from accidentally overwriting a previous session
+    if (editingSessionId && !_editModeConfirmed) {
+        console.warn('[SaveSession] editingSessionId was set but _editModeConfirmed is false — treating as new session to prevent accidental overwrite. editingSessionId:', editingSessionId);
+        editingSessionId = null;
+    }
+
     if (editingSessionId) {
         const idx = sessions.findIndex(s => s.sessionId === editingSessionId);
         if (idx >= 0) {
@@ -7315,6 +7488,10 @@ function saveSession() {
     
     // Sync sessions to SharePoint via serialized save queue (prevents race conditions)
     if (spDataReady) {
+        // Capture a snapshot of all session IDs BEFORE async save starts
+        // This is used to verify no sessions are lost during the async merge
+        const preAsyncSessionIds = new Set(sessions.map(s => s.sessionId));
+        
         enqueueSave(async () => {
             // Upload attachments for new sessions first (sequentially)
             for (const s of justCreated) {
@@ -7327,6 +7504,30 @@ function saveSession() {
             }
             // Single atomic save of all sessions (includes merge with remote)
             await saveAllSessionsToSharePoint();
+            
+            // POST-SAVE VERIFICATION: Check that no local sessions were lost during async merge
+            const postSaveIds = new Set(sessions.map(s => s.sessionId));
+            const lostIds = [...preAsyncSessionIds].filter(id => !postSaveIds.has(id) && !deletedSessionIds.has(id));
+            if (lostIds.length > 0) {
+                console.error('[SaveQueue] CRITICAL: Sessions lost during merge!', lostIds);
+                // Attempt recovery from localStorage
+                try {
+                    const lsData = localStorage.getItem('smartmeet_sessions');
+                    if (lsData) {
+                        const lsSessions = JSON.parse(lsData);
+                        lostIds.forEach(id => {
+                            const recovered = lsSessions.find(s => s.sessionId === id);
+                            if (recovered && !sessions.find(s => s.sessionId === id)) {
+                                sessions.push(recovered);
+                                console.warn('[SaveQueue] Recovered lost session from localStorage:', id);
+                            }
+                        });
+                        // Re-save with recovered sessions
+                        await saveAllSessionsToSharePoint();
+                    }
+                } catch (recErr) { console.error('[SaveQueue] Recovery failed:', recErr); }
+            }
+            
             // Generate PDFs after save
             if (wasEditing) {
                 const editedSession = sessions.find(s => s.sessionId === wasEditing);
@@ -7351,6 +7552,7 @@ function saveSession() {
     }
     
     editingSessionId = null;
+    _editModeConfirmed = false;
     clearDraft(currentDraftId);
     stopDraftAutoSave();
     currentDraftId = null;
@@ -8454,6 +8656,7 @@ function renderSettingsPage() {
     let tabsHtml = `
     <div style="display:flex;gap:0;border-bottom:2px solid var(--gray-200);margin-bottom:24px;">
         <button class="settings-tab active" data-settings-tab="appurl" onclick="switchSettingsTab('appurl')">App URL</button>
+        <button class="settings-tab" data-settings-tab="systemalert" onclick="switchSettingsTab('systemalert')">System Alert</button>
         <button class="settings-tab" data-settings-tab="announcements" onclick="switchSettingsTab('announcements')">Announcements</button>
         ${showUserMgmt ? '<button class="settings-tab" data-settings-tab="usermgmt" onclick="switchSettingsTab(\'usermgmt\')">User Management</button>' : ''}
     </div>`;
@@ -8481,12 +8684,14 @@ function renderSettingsPage() {
 
     let annHtml = '<div class="settings-section" id="settingsSection_announcements" style="display:none;">' + renderAnnouncementsContent() + '</div>';
 
+    let systemAlertHtml = '<div class="settings-section" id="settingsSection_systemalert" style="display:none;">' + renderSystemAlertSettings() + '</div>';
+
     let userMgmtHtml = '';
     if (showUserMgmt) {
         userMgmtHtml = '<div class="settings-section" id="settingsSection_usermgmt" style="display:none;">' + renderUserMgmtContent() + '</div>';
     }
 
-    return '<div>' + tabsHtml + appUrlHtml + annHtml + userMgmtHtml + '</div>';
+    return '<div>' + tabsHtml + appUrlHtml + systemAlertHtml + annHtml + userMgmtHtml + '</div>';
 }
 
 function initSettingsPage() {
@@ -8592,6 +8797,220 @@ async function saveSettings() {
 
 function getSmartMeetAppUrl() {
     return appSettings.appUrl || '';
+}
+
+// ===== SYSTEM-WIDE ALERT BANNER =====
+let _systemAlertPollInterval = null;
+const SYSTEM_ALERT_POLL_MS = 45000; // Poll every 45 seconds
+
+function getSystemAlert() {
+    return appSettings.systemAlert || { enabled: false, severity: 'info', title: '', message: '', updatedBy: '', updatedAt: '' };
+}
+
+function renderSystemAlertSettings() {
+    const alert = getSystemAlert();
+    const sevOptions = ['info', 'warning', 'critical'].map(s => {
+        const labels = { info: 'Information (Blue)', warning: 'Warning (Amber)', critical: 'Critical (Red)' };
+        return `<option value="${s}" ${alert.severity === s ? 'selected' : ''}>${labels[s]}</option>`;
+    }).join('');
+    
+    const icons = { info: 'i', warning: '!', critical: '&#x2716;' };
+    const previewClass = alert.enabled ? `preview-${alert.severity} visible` : '';
+    
+    return `
+    <div class="card" style="max-width:700px;">
+        <div class="card-header"><h3>System-Wide Alert</h3></div>
+        <div class="card-body" style="padding:28px 32px;">
+            <p style="font-size:13px;color:var(--gray-500);margin-bottom:24px;">
+                When enabled, a persistent banner is shown to <strong>all users</strong> on every page. Use this to communicate outages, known issues, or important notices in real time.
+            </p>
+
+            <!-- Enable toggle -->
+            <div style="margin-bottom:24px;">
+                <label style="display:flex;align-items:center;gap:14px;cursor:pointer;font-weight:600;font-size:14px;">
+                    <div class="ann-toggle ${alert.enabled ? 'active' : ''}" id="sysAlertToggle" onclick="toggleSystemAlert()">
+                        <div class="ann-toggle-knob"></div>
+                    </div>
+                    Enable System Alert
+                </label>
+                <input type="hidden" id="sysAlertEnabled" value="${alert.enabled ? '1' : '0'}">
+            </div>
+
+            <!-- Severity -->
+            <div style="margin-bottom:20px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">Severity Level</label>
+                <select id="sysAlertSeverity" onchange="previewSystemAlert()" style="width:100%;max-width:320px;padding:10px 14px;border:1.5px solid var(--gray-300);border-radius:8px;font-size:13px;font-family:inherit;">
+                    ${sevOptions}
+                </select>
+            </div>
+
+            <!-- Title -->
+            <div style="margin-bottom:20px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">Alert Title</label>
+                <input type="text" id="sysAlertTitle" value="${(alert.title || '').replace(/"/g, '&quot;')}" placeholder="e.g. Known Issue: Session Sync Delay" oninput="previewSystemAlert()" style="width:100%;padding:12px 16px;border:1.5px solid var(--gray-300);border-radius:8px;font-size:13px;font-family:inherit;">
+            </div>
+
+            <!-- Message -->
+            <div style="margin-bottom:20px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">Alert Message</label>
+                <textarea id="sysAlertMessage" rows="3" placeholder="Describe the issue or notice for all users..." oninput="previewSystemAlert()" style="width:100%;padding:12px 16px;border:1.5px solid var(--gray-300);border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;">${alert.message || ''}</textarea>
+            </div>
+
+            <!-- Live Preview -->
+            <div style="margin-bottom:24px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">Live Preview</label>
+                <div class="alert-preview-box ${previewClass}" id="sysAlertPreview">
+                    <div style="font-weight:700;margin-bottom:2px;" id="sysAlertPreviewTitle">${alert.title || 'Alert Title'}</div>
+                    <div style="font-size:12.5px;opacity:0.9;" id="sysAlertPreviewMsg">${alert.message || 'Alert message will appear here...'}</div>
+                </div>
+                ${!alert.enabled ? '<div id="sysAlertPreviewOff" style="padding:16px 20px;background:var(--gray-50);border:1px dashed var(--gray-300);border-radius:10px;color:var(--gray-400);font-size:13px;text-align:center;">Enable the toggle above to see a live preview</div>' : ''}
+            </div>
+
+            <!-- Actions -->
+            <div style="display:flex;gap:12px;align-items:center;">
+                <button class="btn btn-primary" onclick="saveSystemAlert()">Publish Alert</button>
+                <button class="btn btn-ghost" onclick="clearSystemAlert()" style="color:var(--pink-400);">Clear &amp; Disable</button>
+                <span id="sysAlertSaveStatus" style="font-size:12px;color:var(--gray-400);"></span>
+            </div>
+
+            ${alert.updatedBy ? '<div style="margin-top:20px;padding:12px 16px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200);font-size:12px;color:var(--gray-500);">Last updated by <strong>' + alert.updatedBy + '</strong> on ' + formatDate(alert.updatedAt) + '</div>' : ''}
+        </div>
+    </div>`;
+}
+
+function toggleSystemAlert() {
+    const toggle = document.getElementById('sysAlertToggle');
+    const hidden = document.getElementById('sysAlertEnabled');
+    const isActive = toggle.classList.toggle('active');
+    hidden.value = isActive ? '1' : '0';
+    previewSystemAlert();
+}
+
+function previewSystemAlert() {
+    const enabled = document.getElementById('sysAlertEnabled').value === '1';
+    const severity = document.getElementById('sysAlertSeverity').value;
+    const title = document.getElementById('sysAlertTitle').value || 'Alert Title';
+    const message = document.getElementById('sysAlertMessage').value || 'Alert message will appear here...';
+    
+    const preview = document.getElementById('sysAlertPreview');
+    const previewOff = document.getElementById('sysAlertPreviewOff');
+    
+    // Update preview content
+    document.getElementById('sysAlertPreviewTitle').textContent = title;
+    document.getElementById('sysAlertPreviewMsg').textContent = message;
+    
+    // Toggle visibility and severity class
+    preview.className = 'alert-preview-box';
+    if (enabled) {
+        preview.classList.add('preview-' + severity, 'visible');
+        if (previewOff) previewOff.style.display = 'none';
+    } else {
+        if (previewOff) previewOff.style.display = '';
+    }
+}
+
+async function saveSystemAlert() {
+    const enabled = document.getElementById('sysAlertEnabled').value === '1';
+    const severity = document.getElementById('sysAlertSeverity').value;
+    const title = document.getElementById('sysAlertTitle').value.trim();
+    const message = document.getElementById('sysAlertMessage').value.trim();
+    
+    if (enabled && !title) { alert('Please enter an alert title.'); return; }
+    if (enabled && !message) { alert('Please enter an alert message.'); return; }
+    
+    appSettings.systemAlert = {
+        enabled,
+        severity,
+        title,
+        message,
+        updatedBy: currentUser.title,
+        updatedAt: new Date().toISOString()
+    };
+    
+    const statusEl = document.getElementById('sysAlertSaveStatus');
+    statusEl.textContent = 'Publishing...';
+    await saveSettingsToSharePoint();
+    statusEl.textContent = enabled ? 'Alert is now live for all users' : 'Alert saved (disabled)';
+    setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 4000);
+    
+    // Immediately update the local banner
+    refreshSystemAlertBanner();
+    showNotification(enabled ? 'System alert published to all users' : 'System alert updated', 'success');
+}
+
+async function clearSystemAlert() {
+    if (!confirm('This will disable and clear the system alert for all users. Continue?')) return;
+    
+    appSettings.systemAlert = {
+        enabled: false,
+        severity: 'info',
+        title: '',
+        message: '',
+        updatedBy: currentUser.title,
+        updatedAt: new Date().toISOString()
+    };
+    
+    await saveSettingsToSharePoint();
+    refreshSystemAlertBanner();
+    showNotification('System alert cleared', 'success');
+    
+    // Re-render settings page to reset the form
+    if (currentPage === 'settings') {
+        document.getElementById('pageContent').innerHTML = renderSettingsPage();
+        initSettingsPage();
+        switchSettingsTab('systemalert');
+    }
+}
+
+function refreshSystemAlertBanner() {
+    const banner = document.getElementById('systemAlertBanner');
+    if (!banner) return;
+    
+    const alert = getSystemAlert();
+    
+    if (!alert.enabled || !alert.title) {
+        banner.classList.remove('visible', 'alert-info', 'alert-warning', 'alert-critical');
+        return;
+    }
+    
+    // Set severity class
+    banner.className = 'system-alert-banner alert-' + (alert.severity || 'info') + ' visible';
+    
+    // Set icon
+    const iconMap = { info: 'i', warning: '!', critical: '\u2716' };
+    document.getElementById('systemAlertIcon').textContent = iconMap[alert.severity] || 'i';
+    
+    // Set content
+    document.getElementById('systemAlertTitle').textContent = alert.title;
+    document.getElementById('systemAlertMessage').textContent = alert.message;
+    
+    // Set meta (who posted and when)
+    const meta = document.getElementById('systemAlertMeta');
+    if (alert.updatedBy && alert.updatedAt) {
+        meta.textContent = 'Posted by ' + alert.updatedBy + ' \u2022 ' + formatDate(alert.updatedAt);
+    } else {
+        meta.textContent = '';
+    }
+}
+
+// Poll settings.json periodically to pick up alert changes from other admins
+function startSystemAlertPolling() {
+    stopSystemAlertPolling();
+    _systemAlertPollInterval = setInterval(async () => {
+        try {
+            await loadSettingsFromSharePoint();
+            refreshSystemAlertBanner();
+        } catch (e) {
+            console.warn('[SystemAlert] Poll failed:', e.message);
+        }
+    }, SYSTEM_ALERT_POLL_MS);
+}
+
+function stopSystemAlertPolling() {
+    if (_systemAlertPollInterval) {
+        clearInterval(_systemAlertPollInterval);
+        _systemAlertPollInterval = null;
+    }
 }
 
 // ===== INIT =====
