@@ -3273,8 +3273,53 @@ async function loadSessionsFromSharePoint() {
     sessionsETag = response.headers.get('ETag') || null;
     const text = await response.text();
     const parsed = JSON.parse(text);
-    sessions = Array.isArray(parsed) ? parsed : (parsed.sessions || []);
+    const remoteSessions = Array.isArray(parsed) ? parsed : (parsed.sessions || []);
+    
+    // ADDITIVE MERGE: Do NOT replace the sessions array.
+    // If a session exists locally but not on SharePoint (e.g., pending async save),
+    // dropping it here would cause data loss. Instead:
+    //   (a) Add remote-only sessions to local
+    //   (b) Update local sessions where remote has a higher version
+    //   (c) Keep local-only sessions untouched (they will sync on next save)
+    if (sessions.length === 0) {
+        // First load or empty local — safe to assign directly
+        sessions = remoteSessions;
+    } else {
+        const localMap = new Map(sessions.map(s => [s.sessionId, s]));
+        let addedCount = 0;
+        let updatedCount = 0;
+        
+        for (const remote of remoteSessions) {
+            if (!remote.sessionId) continue;
+            if (deletedSessionIds.has(remote.sessionId)) continue;
+            if (!localMap.has(remote.sessionId)) {
+                // Remote-only: add to local
+                sessions.push(remote);
+                localMap.set(remote.sessionId, remote);
+                addedCount++;
+            } else {
+                // Exists in both: keep the higher version
+                const local = localMap.get(remote.sessionId);
+                const localVersion = local.version || 1;
+                const remoteVersion = remote.version || 1;
+                if (remoteVersion > localVersion) {
+                    const idx = sessions.findIndex(s => s.sessionId === remote.sessionId);
+                    if (idx >= 0) {
+                        sessions[idx] = remote;
+                        localMap.set(remote.sessionId, remote);
+                        updatedCount++;
+                    }
+                }
+            }
+        }
+        
+        if (addedCount > 0 || updatedCount > 0) {
+            console.log(`[Load Merge] Added ${addedCount} remote-only, updated ${updatedCount}. Total: ${sessions.length}`);
+        }
+    }
+    
     spDataReady = true;
+    saveSessionsToLocalStorage(); // Keep localStorage in sync
     
     // Merge recovered sessions (if not already present — checks both ID and content-duplicate)
     if (RECOVERY_SESSIONS && RECOVERY_SESSIONS.length > 0) {
