@@ -8,6 +8,12 @@
 <link rel="shortcut icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACI0lEQVR42qWTS09TQRiGn5k557SnVykFmgAx8UZMFFkYXajgJRo3bkxcGONP8Q/wQ1yycMcOY6IhMRolInhZUCBSxdLS0nOfccG1oYkL3mQ2X2aeb76Z9xUvpo3hBJKcUFavohC766iMBvNfwN6OOAE/0F3AdEog96miF8CASAdoY1NyJBfHJEqBMeAHsLQMHaERGkwgDyDWYWuB1iEqX2fizCaNrQXCTgelLMpDQzx6MMnMB01YSyFxDsax9u8kpUFHLtlCg7nXM8y+mWewUkFKSTGT4tkTm8HKXapVg7J336RrBC8QJNqj9WsB0fbYabf4u6kQUvEnClhb36BZWiEIh9FaYdt7AANIEXN5LCJXyLOydo3N4icqfacI29vEcUSpMoDrFkhW+5m45NBqJaxvKKQESwCYNr9XX5IdTVMcvUW9c4/xqQuITA5bOYh2k5+N89y/nSC3XvF5ux8hbgAG8WJaGxAEQR2vMcfH2jcmJ58zOKxwyxaO61L74fJ1+QslNc+AOUczvo5jpwGBtf8fabeEm33MVDlAJt+p1TuMj18liRN8q0pGW8TeQ/zCCI489Ix16DSDSTTKSlFxQvpzNRbfLVF2Ikb8KqRvQqqPROuuBBzJgkAISZxAHBfJqxbZqMnZfJOSTIjjDLE2x+JjdTtZIIWh6Z3m/cIccTTL4kaOpn8H7BSiRxqsXkEKQgvlPMX33rLTGMDNX9k7LI4B/gH8ENi5P9eZYwAAAABJRU5ErkJggg==">
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+</script>
 <link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
 <script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
 <style>
@@ -4399,6 +4405,10 @@ function isViewer(user) {
     return user.role === 'Viewer';
 }
 
+function canAccessSettings(user) {
+    return ['Contributor','Administrator','Act On Behalf'].includes(user.role);
+}
+
 // ===== ACT ON BEHALF =====
 function initActOnBehalf() {
     const searchInput = document.getElementById('aobSearch');
@@ -4491,7 +4501,7 @@ function switchToUser(targetUser) {
     document.getElementById('newSessionBtn').style.display = canCreateSession(targetUser) ? '' : 'none';
     document.getElementById('navNewSession').style.display = canCreateSession(targetUser) ? '' : 'none';
     // Keep settings visible since original user has AOB rights
-    document.getElementById('navSettings').style.display = canActOnBehalf(originalUser) ? '' : 'none';
+    document.getElementById('navSettings').style.display = canAccessSettings(originalUser) ? '' : 'none';
     document.getElementById('navDrafts').style.display = isViewer(targetUser) ? 'none' : '';
     document.getElementById('navTeamSessions').style.display = isViewer(targetUser) ? 'none' : '';
     document.getElementById('navOutlierTracker').style.display = canAccessOutlierTracker(targetUser) ? '' : 'none';
@@ -4518,7 +4528,7 @@ function revertToOriginalUser() {
     // Restore permissions
     document.getElementById('newSessionBtn').style.display = canCreateSession(originalUser) ? '' : 'none';
     document.getElementById('navNewSession').style.display = canCreateSession(originalUser) ? '' : 'none';
-    document.getElementById('navSettings').style.display = canActOnBehalf(originalUser) ? '' : 'none';
+    document.getElementById('navSettings').style.display = canAccessSettings(originalUser) ? '' : 'none';
     document.getElementById('navDrafts').style.display = isViewer(originalUser) ? 'none' : '';
     document.getElementById('navTeamSessions').style.display = isViewer(originalUser) ? 'none' : '';
     document.getElementById('navOutlierTracker').style.display = canAccessOutlierTracker(originalUser) ? '' : 'none';
@@ -4935,7 +4945,7 @@ function login(user) {
     // Show/hide elements based on role
     document.getElementById('newSessionBtn').style.display = canCreateSession(user) ? '' : 'none';
     document.getElementById('navNewSession').style.display = canCreateSession(user) ? '' : 'none';
-    document.getElementById('navSettings').style.display = canActOnBehalf(user) ? '' : 'none';
+    document.getElementById('navSettings').style.display = canAccessSettings(user) ? '' : 'none';
     document.getElementById('navDrafts').style.display = isViewer(user) ? 'none' : '';
     document.getElementById('navTeamSessions').style.display = isViewer(user) ? 'none' : '';
     document.getElementById('navOutlierTracker').style.display = canAccessOutlierTracker(user) ? '' : 'none';
@@ -9120,19 +9130,301 @@ async function saveSettingsToSharePoint() {
     }
 }
 
+// ============================================================
+// SESSION RESTORE FROM PDF (v251)
+// ============================================================
+function renderSessionRestoreContent() {
+    return `
+    <div class="card" style="max-width:750px;">
+        <div class="card-header"><h3>Restore Session from PDF Report</h3></div>
+        <div class="card-body" style="padding:28px 32px;">
+            <p style="font-size:13px;color:var(--gray-500);margin-bottom:24px;">
+                Upload a SmartMeet Session Report PDF to restore a lost session. A new Session ID will be assigned automatically. No email notifications will be sent — this is for data correction only.
+            </p>
+            <div style="margin-bottom:24px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">Select PDF Report</label>
+                <input type="file" id="restorePdfInput" accept=".pdf" style="font-size:13px;font-family:inherit;" onchange="handleRestorePdfUpload(this)">
+            </div>
+            <div id="restorePreview" style="display:none;margin-bottom:24px;padding:20px;border:1.5px solid var(--blue-300);border-radius:10px;background:var(--blue-100);">
+                <div style="font-size:13px;font-weight:700;color:var(--blue-500);margin-bottom:12px;">Parsed Session Data</div>
+                <div id="restorePreviewContent" style="font-size:12px;color:var(--gray-700);"></div>
+            </div>
+            <div id="restoreError" style="display:none;margin-bottom:24px;padding:16px 20px;border-radius:10px;background:#FFEAEA;border:1.5px solid #FF5C5C;color:#C62828;font-size:13px;"></div>
+            <div style="display:flex;gap:12px;align-items:center;">
+                <button class="btn btn-primary" id="restoreBtn" onclick="executeSessionRestore()" disabled>Restore Session</button>
+                <span id="restoreStatus" style="font-size:12px;color:var(--gray-400);"></span>
+            </div>
+        </div>
+    </div>`;
+}
+
+let _parsedRestoreData = null;
+
+async function handleRestorePdfUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+    
+    const previewEl = document.getElementById('restorePreview');
+    const errorEl = document.getElementById('restoreError');
+    const restoreBtn = document.getElementById('restoreBtn');
+    const statusEl = document.getElementById('restoreStatus');
+    
+    previewEl.style.display = 'none';
+    errorEl.style.display = 'none';
+    restoreBtn.disabled = true;
+    statusEl.textContent = 'Parsing PDF...';
+    _parsedRestoreData = null;
+    
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+        
+        // Extract text from all pages
+        let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            const strings = content.items.map(item => item.str);
+            fullText += strings.join(' ') + '\\n';
+        }
+        
+        // Verify this is a SmartMeet report
+        if (!fullText.includes('SmartMeet Session Report')) {
+            throw new Error('This does not appear to be a SmartMeet Session Report PDF.');
+        }
+        
+        // Parse the text to extract session fields
+        const parsed = parseSmartMeetPdfText(fullText);
+        if (!parsed || !parsed.sessionType) {
+            throw new Error('Could not extract session data from this PDF. Ensure it is a valid SmartMeet Session Report.');
+        }
+        
+        _parsedRestoreData = parsed;
+        
+        // Show preview
+        const isTeamMtg = isMultiAttendeeType(parsed.sessionType);
+        const coachUser = getUserByTitle(parsed.coachName);
+        const coachFound = !!coachUser;
+        const restoreToName = parsed.coachName || 'Unknown';
+        
+        let previewHtml = `
+            <div style="margin-bottom:14px;padding:14px 18px;background:#FFF;border-radius:8px;border:2px solid var(--blue-400);">
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--gray-400);margin-bottom:4px;">Session will be restored under</div>
+                <div style="font-size:16px;font-weight:700;color:var(--blue-500);">${restoreToName}</div>
+                <div style="font-size:12px;color:var(--gray-500);margin-top:2px;">${coachFound ? coachUser.designation + ' &bull; ' + coachUser.email : '<span style="color:#E65100;">User not found in roster — will use current user as fallback</span>'}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;">
+                <div><strong>Original ID:</strong> ${parsed.originalSessionId || 'Unknown'}</div>
+                <div><strong>Type:</strong> ${parsed.sessionType}</div>
+                <div><strong>Category:</strong> ${parsed.category}</div>
+                <div><strong>Date:</strong> ${parsed.date}</div>
+                <div><strong>Outlier:</strong> ${parsed.outlier ? 'Yes' : 'No'}</div>
+            </div>`;
+        if (isTeamMtg && parsed.attendees && parsed.attendees.length > 0) {
+            previewHtml += `<div style="margin-top:10px;"><strong>Attendees (${parsed.attendees.length}):</strong></div>
+                <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">
+                    ${parsed.attendees.map(a => `<span style="display:inline-block;padding:3px 10px;background:#FFF;border:1px solid var(--blue-300);color:var(--blue-500);border-radius:12px;font-size:11px;font-weight:500;">${a}</span>`).join('')}
+                </div>`;
+        } else if (parsed.attendee) {
+            previewHtml += `<div style="margin-top:10px;"><strong>Attendee:</strong> ${parsed.attendee}</div>`;
+        }
+        if (parsed.fieldData) {
+            const fieldEntries = Object.entries(parsed.fieldData);
+            if (fieldEntries.length > 0) {
+                previewHtml += '<div style="margin-top:10px;"><strong>Session Content:</strong></div>';
+                fieldEntries.forEach(([key, val]) => {
+                    const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase());
+                    const truncated = val.length > 150 ? val.substring(0, 150) + '...' : val;
+                    previewHtml += `<div style="margin-top:4px;font-size:12px;"><span style="color:var(--gray-500);">${label}:</span> ${truncated}</div>`;
+                });
+            }
+        }
+        previewHtml += `<div style="margin-top:14px;padding:10px 14px;background:var(--green-100, #E8F5E9);border-radius:8px;color:#2E7D32;font-size:12px;">
+            <strong>What will happen:</strong> A new Session ID will be assigned automatically. The session will appear in <strong>${restoreToName}</strong>'s records. No email notifications will be sent — this is a silent data correction.
+        </div>`;
+        
+        document.getElementById('restorePreviewContent').innerHTML = previewHtml;
+        previewEl.style.display = '';
+        restoreBtn.disabled = false;
+        statusEl.textContent = 'Ready to restore.';
+    } catch (err) {
+        errorEl.textContent = err.message || 'Failed to parse PDF.';
+        errorEl.style.display = '';
+        statusEl.textContent = '';
+        console.error('PDF restore parse error:', err);
+    }
+}
+
+function parseSmartMeetPdfText(text) {
+    // Helper: extract value after a label (handles multi-line by looking ahead to next label or section)
+    function extractField(label, nextLabels) {
+        // Build regex: label followed by colon/space, capture until next known label
+        const escapedLabel = label.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\\$&');
+        let stopPattern = '';
+        if (nextLabels && nextLabels.length > 0) {
+            stopPattern = '(?=' + nextLabels.map(l => l.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\\$&')).join('|') + ')';
+        } else {
+            stopPattern = '(?=\\\\n|$)';
+        }
+        const regex = new RegExp(escapedLabel + '[:\\\\s]*(.+?)' + stopPattern, 's');
+        const match = text.match(regex);
+        return match ? match[1].trim().replace(/\\s+/g, ' ') : '';
+    }
+    
+    const result = {};
+    
+    // Session ID
+    result.originalSessionId = extractField('Session ID', ['Session Type']);
+    
+    // Session Type
+    result.sessionType = extractField('Session Type', ['Category']);
+    
+    // Category
+    result.category = extractField('Category', ['Date']);
+    
+    // Date
+    const dateStr = extractField('Date', ['Outlier']);
+    result.date = dateStr;
+    
+    // Outlier
+    const outlierStr = extractField('Outlier', ['Coach']);
+    result.outlier = (outlierStr.toLowerCase().startsWith('yes'));
+    
+    // Coach
+    result.coachName = extractField('Coach', ['Coach Designation']);
+    
+    // Coach Designation  
+    const coachDesig = extractField('Coach Designation', ['Attendees', 'Coachee', 'Session Details', 'Notes']);
+    result.coachDesignation = coachDesig;
+    
+    // Attendees or single Coachee
+    if (isMultiAttendeeType(result.sessionType)) {
+        const attendeesStr = extractField('Attendees', ['Session Details', 'Notes', 'SmartMeet']);
+        if (attendeesStr) {
+            result.attendees = attendeesStr.split(',').map(a => a.trim()).filter(a => a && !a.startsWith('SmartMeet'));
+            result.attendee = result.attendees.join(', ');
+        }
+    } else {
+        result.attendee = extractField('Coachee', ['Coachee SAP ID', 'Session Details', 'Notes']);
+        result.attendees = result.attendee ? [result.attendee] : [];
+    }
+    
+    // Field Data — depends on category
+    result.fieldData = {};
+    const catFields = SESSION_FORM_CONFIG.fields[result.category];
+    if (catFields) {
+        catFields.forEach((field, idx) => {
+            const nextLabels = [];
+            if (idx < catFields.length - 1) {
+                nextLabels.push(catFields[idx + 1].label);
+            }
+            nextLabels.push('Comments / Feedback', 'Comments/Feedback', 'Attachments', 'Acknowledgement', 'SmartMeet');
+            const val = extractField(field.label, nextLabels);
+            if (val) {
+                result.fieldData[field.name] = val;
+            }
+        });
+    }
+    
+    // Comments/Feedback
+    const cf = extractField('Comments / Feedback', ['Attachments', 'Acknowledgement', 'SmartMeet']);
+    // The label line may just be ":" followed by the value
+    result.commentsFeedback = cf.replace(/^[:\\s]+/, '').trim() || '';
+    if (result.commentsFeedback === 'N/A') result.commentsFeedback = '';
+    
+    return result;
+}
+
+async function executeSessionRestore() {
+    if (!_parsedRestoreData) return;
+    
+    const statusEl = document.getElementById('restoreStatus');
+    const restoreBtn = document.getElementById('restoreBtn');
+    restoreBtn.disabled = true;
+    statusEl.textContent = 'Restoring session...';
+    
+    try {
+        const data = _parsedRestoreData;
+        const isTeamMtg = isMultiAttendeeType(data.sessionType);
+        
+        // Find the coach user by name
+        const coachUser = getUserByTitle(data.coachName);
+        
+        const newSession = {
+            sessionId: generateSessionId(),
+            sessionType: data.sessionType,
+            category: data.category,
+            fieldData: data.fieldData || {},
+            commentsFeedback: data.commentsFeedback || '',
+            attendee: data.attendee || '',
+            attendees: data.attendees || [],
+            date: data.date,
+            outlier: data.outlier ? 'Yes' : false,
+            attachments: [],
+            acknowledged: isTeamMtg ? true : false,
+            ackComment: isTeamMtg ? 'Completed' : '',
+            ackDate: isTeamMtg ? new Date().toISOString() : null,
+            createdBy: coachUser ? coachUser.id : (currentUser.id),
+            createdByName: data.coachName || (coachUser ? coachUser.title : currentUser.title),
+            createdAt: new Date().toISOString(),
+            version: 1,
+            history: [],
+            _restoredFrom: data.originalSessionId || 'PDF',
+            _restoredAt: new Date().toISOString(),
+            _restoredBy: originalUser ? originalUser.title : currentUser.title
+        };
+        
+        sessions.push(newSession);
+        
+        // Save to SharePoint (no email notifications — this is a silent restore)
+        saveSessions();
+        if (spDataReady) {
+            enqueueSave(async () => {
+                await saveAllSessionsToSharePoint();
+            });
+        }
+        
+        statusEl.innerHTML = '<span style="color:#2E7D32;font-weight:600;">Session restored successfully as ' + newSession.sessionId + '</span>';
+        
+        // Reset form
+        _parsedRestoreData = null;
+        document.getElementById('restorePdfInput').value = '';
+        
+        // Refresh current page view
+        setTimeout(() => navigateTo(currentPage), 1500);
+        
+    } catch (err) {
+        statusEl.innerHTML = '<span style="color:#C62828;">Restore failed: ' + (err.message || 'Unknown error') + '</span>';
+        restoreBtn.disabled = false;
+        console.error('Session restore error:', err);
+    }
+}
+
 function renderSettingsPage() {
-    const showUserMgmt = canManageUsers(originalUser);
+    const effectiveUser = originalUser || currentUser;
+    const showAdminTabs = isAdmin(effectiveUser);
+    const showUserMgmt = canManageUsers(effectiveUser);
+    
+    // Determine the default active tab: admins see App URL first, contributors see Session Restore
+    const defaultTab = showAdminTabs ? 'appurl' : 'sessionrestore';
     
     let tabsHtml = `
-    <div style="display:flex;gap:0;border-bottom:2px solid var(--gray-200);margin-bottom:24px;">
-        <button class="settings-tab active" data-settings-tab="appurl" onclick="switchSettingsTab('appurl')">App URL</button>
-        <button class="settings-tab" data-settings-tab="systemalert" onclick="switchSettingsTab('systemalert')">System Alert</button>
-        <button class="settings-tab" data-settings-tab="announcements" onclick="switchSettingsTab('announcements')">Announcements</button>
+    <div style="display:flex;gap:0;border-bottom:2px solid var(--gray-200);margin-bottom:24px;flex-wrap:wrap;">
+        ${showAdminTabs ? `<button class="settings-tab${defaultTab === 'appurl' ? ' active' : ''}" data-settings-tab="appurl" onclick="switchSettingsTab('appurl')">App URL</button>` : ''}
+        ${showAdminTabs ? '<button class="settings-tab" data-settings-tab="systemalert" onclick="switchSettingsTab(\'systemalert\')">System Alert</button>' : ''}
+        ${showAdminTabs ? '<button class="settings-tab" data-settings-tab="announcements" onclick="switchSettingsTab(\'announcements\')">Announcements</button>' : ''}
         ${showUserMgmt ? '<button class="settings-tab" data-settings-tab="usermgmt" onclick="switchSettingsTab(\'usermgmt\')">User Management</button>' : ''}
+        <button class="settings-tab${defaultTab === 'sessionrestore' ? ' active' : ''}" data-settings-tab="sessionrestore" onclick="switchSettingsTab('sessionrestore')">Session Restore</button>
     </div>`;
 
-    let appUrlHtml = `
-    <div class="settings-section" id="settingsSection_appurl">
+    let appUrlHtml = '';
+    let annHtml = '';
+    let systemAlertHtml = '';
+    let userMgmtHtml = '';
+    
+    if (showAdminTabs) {
+        appUrlHtml = `
+    <div class="settings-section" id="settingsSection_appurl"${defaultTab !== 'appurl' ? ' style="display:none;"' : ''}>
         <div class="card" style="max-width:700px;">
             <div class="card-header"><h3>SmartMeet App URL</h3></div>
             <div class="card-body" style="padding:28px 32px;">
@@ -9152,16 +9444,17 @@ function renderSettingsPage() {
         </div>
     </div>`;
 
-    let annHtml = '<div class="settings-section" id="settingsSection_announcements" style="display:none;">' + renderAnnouncementsContent() + '</div>';
-
-    let systemAlertHtml = '<div class="settings-section" id="settingsSection_systemalert" style="display:none;">' + renderSystemAlertSettings() + '</div>';
-
-    let userMgmtHtml = '';
+        annHtml = '<div class="settings-section" id="settingsSection_announcements" style="display:none;">' + renderAnnouncementsContent() + '</div>';
+        systemAlertHtml = '<div class="settings-section" id="settingsSection_systemalert" style="display:none;">' + renderSystemAlertSettings() + '</div>';
+    }
+    
     if (showUserMgmt) {
         userMgmtHtml = '<div class="settings-section" id="settingsSection_usermgmt" style="display:none;">' + renderUserMgmtContent() + '</div>';
     }
 
-    return '<div>' + tabsHtml + appUrlHtml + systemAlertHtml + annHtml + userMgmtHtml + '</div>';
+    let sessionRestoreHtml = '<div class="settings-section" id="settingsSection_sessionrestore"' + (defaultTab !== 'sessionrestore' ? ' style="display:none;"' : '') + '>' + renderSessionRestoreContent() + '</div>';
+
+    return '<div>' + tabsHtml + appUrlHtml + systemAlertHtml + annHtml + userMgmtHtml + sessionRestoreHtml + '</div>';
 }
 
 function initSettingsPage() {
