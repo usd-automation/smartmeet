@@ -4569,7 +4569,7 @@ function getCoachableMembers(user) {
     // Non-manager Admin/AOB or STL: can coach anyone
     if (isAdmin(user)) return getActiveUsers().filter(u => u.id !== user.id);
     if (user.designation === 'CSR 2') return getActiveUsers().filter(u => matchesName(u.supervisor, user.supervisor) && u.designation === 'CSR 1');
-    if (user.designation === 'CSR 3') return getActiveUsers().filter(u => u.id !== user.id && ['CSR 1','CSR 2'].includes(u.designation));
+    if (user.designation === 'CSR 3') return getActiveUsers().filter(u => u.id !== user.id);
     if (user.designation === 'STL') return getActiveUsers().filter(u => u.id !== user.id);
     return [];
 }
@@ -8488,27 +8488,42 @@ async function loadAnnouncementFromSharePoint() {
 
 async function saveAnnouncementData(data) {
     announcementData = data;
-    try { localStorage.setItem('smartmeet_announcement', JSON.stringify(data)); } catch(e) {}
+    try { localStorage.setItem('smartmeet_announcement', JSON.stringify(data)); } catch(e) {
+        console.warn('Could not cache announcement to localStorage:', e.message);
+    }
     // Save to SharePoint
     try {
         const driveId = await discoverDriveId();
         const token = await getGraphToken();
-        await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${SP_ANNOUNCEMENT_FILE}:/content`, {
+        const resp = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${SP_ANNOUNCEMENT_FILE}:/content`, {
             method: 'PUT',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            throw new Error(`SharePoint save failed (HTTP ${resp.status}): ${errText.substring(0, 200)}`);
+        }
+        return { success: true };
     } catch(e) {
-        console.warn('Could not save announcement to SharePoint:', e.message);
+        console.error('Announcement SharePoint save error:', e);
+        return { success: false, error: e.message || 'Unknown error' };
     }
 }
 
-function showAnnouncementIfEnabled() {
+async function showAnnouncementIfEnabled() {
     // Load from localStorage cache first (SharePoint may not be connected yet)
     try {
         const saved = localStorage.getItem('smartmeet_announcement');
         if (saved) announcementData = JSON.parse(saved);
     } catch(e) {}
+    
+    // If not enabled from cache, try loading from SharePoint as well (may have been updated by another admin)
+    if (!announcementData || !announcementData.enabled) {
+        try {
+            await loadAnnouncementFromSharePoint();
+        } catch(e) {}
+    }
     
     const data = getAnnouncementData();
     if (!data || !data.enabled) return;
@@ -8577,8 +8592,19 @@ async function saveAnnouncement() {
     };
     // Clear image if it's empty or just the page URL
     if (!data.image || data.image === window.location.href) data.image = '';
-    await saveAnnouncementData(data);
-    alert('Announcement saved successfully. All users will see it on next login.');
+    
+    const result = await saveAnnouncementData(data);
+    
+    if (result.success) {
+        alert('Announcement saved successfully. All users will see it on next login.');
+    } else {
+        // Data is still saved locally (localStorage + in-memory) even if SharePoint failed
+        let hint = '';
+        if (data.image && data.image.length > 500000) {
+            hint = '\n\nThe attached image is very large (' + Math.round(data.image.length / 1024) + ' KB). Try using a smaller or compressed image.';
+        }
+        alert('Announcement saved locally but failed to sync to SharePoint: ' + result.error + hint + '\n\nOther users may not see this announcement until the sync succeeds.');
+    }
 }
 
 function previewAnnouncement() {
