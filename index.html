@@ -4966,11 +4966,11 @@ function login(user) {
     // Show system alert banner if one is active
     refreshSystemAlertBanner();
     
-    // Show announcement popup after a brief delay
-    setTimeout(() => showAnnouncementIfEnabled(), 500);
-    
     // Initialize SharePoint connection in background (delay to let login interaction fully complete)
     setTimeout(() => initSharePointConnection(), 2000);
+    
+    // Show announcement popup after SharePoint connection is likely ready
+    setTimeout(() => showAnnouncementIfEnabled(), 3500);
     
     // Start polling settings for system alert changes from other admins
     startSystemAlertPolling();
@@ -8512,17 +8512,15 @@ async function saveAnnouncementData(data) {
 }
 
 async function showAnnouncementIfEnabled() {
-    // Load from localStorage cache first (SharePoint may not be connected yet)
+    // Always try SharePoint first to get the latest announcement data
     try {
-        const saved = localStorage.getItem('smartmeet_announcement');
-        if (saved) announcementData = JSON.parse(saved);
-    } catch(e) {}
-    
-    // If not enabled from cache, try loading from SharePoint as well (may have been updated by another admin)
-    if (!announcementData || !announcementData.enabled) {
+        await loadAnnouncementFromSharePoint();
+    } catch(e) {
+        // SharePoint failed — fall back to localStorage cache
         try {
-            await loadAnnouncementFromSharePoint();
-        } catch(e) {}
+            const saved = localStorage.getItem('smartmeet_announcement');
+            if (saved) announcementData = JSON.parse(saved);
+        } catch(ex) {}
     }
     
     const data = getAnnouncementData();
